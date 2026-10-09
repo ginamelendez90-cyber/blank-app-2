@@ -9,12 +9,12 @@ import streamlit as st
 # CONFIGURACIÓN DE PÁGINA
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="Crypto Predictor Pro Engine - Whale Tracker",
-    page_icon="🐋",
+    page_title="Crypto Predictor Pro Engine - Order Flow",
+    page_icon="⚡",
     layout="wide",
 )
 
-st.title("🐋 Crypto Predictor & Detector de Ballenas (Optimizado)")
+st.title("⚡ Crypto Predictor & Analizador de Presión de Vela Actual")
 
 # ---------------------------------------------------------
 # 1. BARRA LATERAL: PARÁMETROS Y GESTIÓN DE RIESGO
@@ -58,7 +58,7 @@ auto_refresh = st.sidebar.checkbox("Activar Auto-Refresco (1s)", value=True)
 candle_limit = 150
 
 # ---------------------------------------------------------
-# 2. CONEXIÓN API Y EXTRACCIÓN DE DATOS DE MERCADO
+# 2. CONEXIÓN API Y EXTRACCIÓN DE DATOS
 # ---------------------------------------------------------
 HEADERS = {
     "User-Agent": (
@@ -102,8 +102,7 @@ def fetch_from_okx(symbol: str, interval: str, limit: int = 150):
   return pd.DataFrame()
 
 
-def fetch_whale_trades(symbol: str, min_usd: float):
-  # Aumentamos el límite a 300 para capturar más historial de transacciones en vivo
+def fetch_live_order_flow(symbol: str, min_usd: float):
   url = f"https://www.okx.com/api/v5/market/trades?instId={symbol}&limit=300"
   try:
     response = requests.get(url, headers=HEADERS, timeout=3)
@@ -120,11 +119,19 @@ def fetch_whale_trades(symbol: str, min_usd: float):
             df_trades["Time"].astype(int), unit="ms"
         ).dt.strftime("%H:%M:%S")
 
+        # Separar volumen general y volumen de ballenas
+        total_buy_vol = df_trades[df_trades["Side"] == "buy"][
+            "Total_USD"
+        ].sum()
+        total_sell_vol = df_trades[df_trades["Side"] == "sell"][
+            "Total_USD"
+        ].sum()
+
         whales = df_trades[df_trades["Total_USD"] >= min_usd]
-        return whales[["Hora", "Side", "Price", "Size", "Total_USD"]]
+        return df_trades, whales, total_buy_vol, total_sell_vol
   except Exception:
     pass
-  return pd.DataFrame()
+  return pd.DataFrame(), pd.DataFrame(), 0.0, 0.0
 
 
 @st.cache_data(ttl=1, show_spinner=False)
@@ -133,7 +140,9 @@ def get_crypto_candles(symbol: str, interval: str):
 
 
 data = get_crypto_candles(symbol, interval)
-whale_df = fetch_whale_trades(symbol, min_whale_usd)
+df_trades, whale_df, live_buy_vol, live_sell_vol = fetch_live_order_flow(
+    symbol, min_whale_usd
+)
 
 if data.empty or len(data) < 50:
   st.error("Estableciendo conexión con el servidor de datos...")
@@ -249,8 +258,17 @@ is_high_expansion_setup = (
     and (atr_val > df_processed["ATR"].mean())
 )
 
+# Cálculo de Porcentaje de Compras vs Ventas en la Vela Actual
+total_vol = live_buy_vol + live_sell_vol
+if total_vol > 0:
+  buy_pct = (live_buy_vol / total_vol) * 100
+  sell_pct = (live_sell_vol / total_vol) * 100
+else:
+  buy_pct = 50.0
+  sell_pct = 50.0
+
 # ---------------------------------------------------------
-# 5. INTERFAZ PRINCIPAL Y PANEL DE BALLENAS (CON RESPALDO)
+# 5. INTERFAZ PRINCIPAL Y PANEL DE COMPRAS / VENTAS
 # ---------------------------------------------------------
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Precio Mercado", f"${entry_price:,.2f}")
@@ -264,6 +282,34 @@ st.line_chart(df_processed["Close"].tail(25), height=120)
 
 st.markdown("---")
 
+# APARTADO EXCLUSIVO: COMPRAS VS VENTAS DE LA VELA ACTUAL
+st.subheader("⚖️ Presión Interna de Compra y Venta (Vela Actual en Vivo)")
+
+col_p1, col_p2 = st.columns(2)
+with col_p1:
+  st.metric(
+      "🟢 Volumen de Compras (En Vivo)",
+      f"${live_buy_vol:,.2f}",
+      f"{buy_pct:.1f}% del Mercado",
+  )
+with col_p2:
+  st.metric(
+      "🔴 Volumen de Ventas (En Vivo)",
+      f"${live_sell_vol:,.2f}",
+      f"{sell_pct:.1f}% del Mercado",
+  )
+
+# Barra de progreso visual para el dominio de compras vs ventas
+st.progress(
+    int(buy_pct),
+    text=(
+        f"Dominio de Compras: {buy_pct:.1f}%  |  Dominio de Ventas:"
+        f" {sell_pct:.1f}%"
+    ),
+)
+
+st.markdown("---")
+
 # APARTADO DE RASTEO DE BALLENAS
 st.subheader(
     f"🐋 RASTREADOR DE BALLENAS (Órdenes > ${min_whale_usd:,.0f} USD)"
@@ -274,18 +320,20 @@ if not whale_df.empty:
   sell_whales = whale_df[whale_df["Side"] == "sell"]["Total_USD"].sum()
 
   col_w1, col_w2, col_w3 = st.columns(3)
-  col_w1.metric("Volumen Compras Ballenas (Buy)", f"${buy_whales:,.2f}")
-  col_w2.metric("Volumen Ventas Ballenas (Sell)", f"${sell_whales:,.2f}")
+  col_w1.metric("Compras de Ballenas", f"${buy_whales:,.2f}")
+  col_w2.metric("Ventas de Ballenas", f"${sell_whales:,.2f}")
 
   pressure = (
       "🟢 COMPRAS INSTITUCIONALES DOMINANTES"
       if buy_whales >= sell_whales
-      else "🔴 VENTAS INSTITUCIONALES / PRESIÓN BAJISTA"
+      else "🔴 VENTAS INSTITUCIONALES DOMINANTES"
   )
-  col_w3.metric("Flujo Neto Institucional", pressure)
+  col_w3.metric("Flujo Institucional", pressure)
 
   st.dataframe(
-      whale_df.style.format(
+      whale_df[["Hora", "Side", "Price", "Size", "Total_USD"]]
+      .head(10)
+      .style.format(
           {
               "Price": "${:,.2f}",
               "Size": "{:,.4f}",
@@ -293,34 +341,10 @@ if not whale_df.empty:
           }
       ),
       use_container_width=True,
-      height=200,
+      height=180,
   )
 else:
-  # Sistema de respaldo heurístico si el endpoint de trades está saturado o vacío
-  st.warning(
-      "⚠️ Órdenes directas individuales no detectadas en este milisegundo."
-      " Activando Estimación de Flujo Institucional por Volumen de Velas:"
-  )
-
-  est_volume = last_row["Volume"] * entry_price
-  col_w1, col_w2, col_w3 = st.columns(3)
-  col_w1.metric(
-      "Volumen de la Vela Actual",
-      f"${est_volume:,.2f}",
-      delta="Expan. Institucional"
-      if last_row["Volume_Surge"]
-      else "Normal",
-  )
-  col_w2.metric(
-      "Intensidad de Compra/Venta",
-      "🟢 Fuerte Acumulación" if is_up else "🔴 Fuerte Distribución",
-  )
-  col_w3.metric(
-      "Estado de Ballenas",
-      "Activas en el rango"
-      if last_row["Volume_Surge"]
-      else "En espera de ruptura",
-  )
+  st.info("Escaneando transacciones institucionales grandes...")
 
 st.markdown("---")
 
@@ -329,13 +353,13 @@ if is_high_expansion_setup:
       f"🚀 **¡ALERTA PRO: OPORTUNIDAD X5/X10 EN TEMPORALIDAD DE {interval}!**"
   )
   st.markdown(
-      "Se detectó un **impulso de volumen institucional** y acumulación de"
-      f" ballenas en **{symbol}** para la temporalidad de **{interval}**."
+      "Se detectó un **impulso de volumen institucional** y acumulación"
+      f" favorable en **{symbol}** para la temporalidad de **{interval}**."
   )
 else:
   st.info(
-      f"⏳ **Estado de Mercado ({interval}):** Analizando flujos de volumen y"
-      " acumulación..."
+      f"⏳ **Estado de Mercado ({interval}):** Analizando flujos de presión"
+      " actual..."
   )
 
 st.markdown("---")
