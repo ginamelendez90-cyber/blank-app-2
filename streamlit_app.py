@@ -6,12 +6,12 @@ import streamlit as st
 
 # Configuración de página
 st.set_page_config(
-    page_title="Trading Signal Bot",
+    page_title="Crypto Signal & Candle Predictor",
     page_icon="🎯",
     layout="wide",
 )
 
-st.title("🎯 Bot de Señales Cripto y Puntos de Entrada (1s)")
+st.title("🎯 Predictor de Próxima Vela y Ficha de Operación (1s)")
 
 # ---------------------------------------------------------
 # 1. BARRA LATERAL: PARÁMETROS Y GESTIÓN DE RIESGO
@@ -105,12 +105,12 @@ if data.empty or len(data) < 30:
 
 
 # ---------------------------------------------------------
-# 3. CÁLCULO DE VOLATILIDAD (ATR), INDICADORES Y NIVELES
+# 3. INDICADORES, PREDICCIÓN DE VELA Y ATR
 # ---------------------------------------------------------
 def build_indicators(df_in):
   df = df_in.copy()
 
-  # Medias Móviles Simples
+  # Medias Móviles
   df["SMA_10"] = df["Close"].rolling(window=10).mean()
   df["SMA_30"] = df["Close"].rolling(window=30).mean()
 
@@ -121,7 +121,7 @@ def build_indicators(df_in):
   rs = gain / (loss + 1e-9)
   df["RSI"] = 100 - (100 / (1 + rs))
 
-  # ATR (Average True Range - Volatilidad real en USD)
+  # ATR (Volatilidad real en USD)
   high_low = df["High"] - df["Low"]
   high_close = np.abs(df["High"] - df["Close"].shift())
   low_close = np.abs(df["Low"] - df["Close"].shift())
@@ -137,7 +137,7 @@ df_processed = build_indicators(data)
 last_row = df_processed.iloc[-1]
 prev_row = df_processed.iloc[-2]
 
-# --- LÓGICA DE DECISIÓN DE OPERACIÓN ---
+# Criterio de Puntuación
 score = 0
 if last_row["SMA_10"] > last_row["SMA_30"]:
   score += 40
@@ -154,50 +154,43 @@ else:
   else:
     score -= 15
 
-# Dirección de la Operación
-if score >= 15:
-  trade_type = "LONG (COMPRA 🟢)"
-  is_long = True
-elif score <= -15:
-  trade_type = "SHORT (VENTA 🔴)"
-  is_long = False
+# --- PREDICCIÓN DE LA PRÓXIMA VELA ---
+if score >= 0:
+  candle_prediction = "🟢 SUBIDA"
+  is_up = True
 else:
-  trade_type = "NEUTRAL (ESPERAR ⚪)"
-  is_long = None
+  candle_prediction = "🔴 BAJADA"
+  is_up = False
 
-# --- CÁLCULO DE PUNTOS CLAVE PARA LA OPERACIÓN ---
 entry_price = float(last_row["Close"])
 atr_val = float(last_row["ATR"])
 
-# Rango estimado de movimiento proyectado por la volatilidad (ATR)
+# Rango estimado que subirá o bajará la vela según volatilidad (ATR)
 expected_range_usd = atr_val * risk_reward_ratio
 expected_range_pct = (expected_range_usd / entry_price) * 100
 
-if is_long is True:
+# Cálculo de Stop Loss y Take Profit
+if is_up:
   take_profit = entry_price + expected_range_usd
-  stop_loss = entry_price - (atr_val * 1.0)
-elif is_long is False:
-  take_profit = entry_price - expected_range_usd
-  stop_loss = entry_price + (atr_val * 1.0)
+  stop_loss = entry_price - atr_val
 else:
-  take_profit = entry_price
-  stop_loss = entry_price
+  take_profit = entry_price - expected_range_usd
+  stop_loss = entry_price + atr_val
 
 confidence = min(abs(score) + 40, 95.0)
 
 # ---------------------------------------------------------
-# 4. DASHBOARD DE OPERACIÓN EN TIEMPO REAL
+# 4. DASHBOARD DE PREDICCIÓN Y OPERACIÓN
 # ---------------------------------------------------------
-col_a, col_b, col_c, col_d = st.columns(4)
-col_a.metric("Precio Mercado (Entrada)", f"${entry_price:,.2f}")
-col_b.metric("Dirección de Operación", trade_type)
-col_c.metric("Rango Estimado Subida/Baja", f"±${expected_range_usd:,.2f}")
-col_d.metric("Porcentaje Proyectado", f"{expected_range_pct:.2f}%")
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Precio Actual", f"${entry_price:,.2f}")
+m2.metric("Predicción Próxima Vela", candle_prediction)
+m3.metric("Rango Estimado del Movimiento", f"±${expected_range_usd:,.2f}")
+m4.metric("Porcentaje Estimado", f"{expected_range_pct:.2f}%")
 
 st.markdown("---")
 
-# Ficha de Orden de Trading
-st.subheader("📋 Plan de Operación Recomendado")
+st.subheader("📋 Parámetros Exactos para Entrar a Operar")
 
 t1, t2, t3, t4 = st.columns(4)
 
@@ -205,21 +198,24 @@ with t1:
   st.info(f"**Punto de Entrada (EP):**\n### ${entry_price:,.2f}")
 
 with t2:
-  st.success(f"**Objetivo Take Profit (TP):**\n### ${take_profit:,.2f}")
+  st.success(f"**Take Profit (TP / Objetivo):**\n### ${take_profit:,.2f}")
 
 with t3:
-  st.error(f"**Límite Stop Loss (SL):**\n### ${stop_loss:,.2f}")
+  st.error(f"**Stop Loss (SL / Límite):**\n### ${stop_loss:,.2f}")
 
 with t4:
-  st.warning(f"**Confianza Técnica:**\n### {confidence:.1f}%")
+  st.warning(f"**Confianza de la Señal:**\n### {confidence:.1f}%")
 
-# Gráficos
 st.markdown("---")
+
 st.subheader(f"📈 Tendencia en Tiempo Real — {symbol}")
 st.line_chart(df_processed[["Close", "SMA_10", "SMA_30"]])
 
+st.subheader("📊 Indicador RSI")
+st.line_chart(df_processed["RSI"])
+
 # ---------------------------------------------------------
-# 5. AUTO-REFRESCO
+# 5. REFRESEO AUTOMÁTICO CADA 1 SEGUNDO
 # ---------------------------------------------------------
 if auto_refresh:
   time.sleep(1)
