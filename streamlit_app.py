@@ -6,26 +6,28 @@ import requests
 import streamlit as st
 
 # ---------------------------------------------------------
-# CONFIGURACIÓN DE PÁGINA Y ESTADO PERSISTENTE
+# CONFIGURACIÓN DE PÁGINA Y MEMORIA PERSISTENTE DE TRADING
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="Crypto Predictor Pro - Auto Signal Engine",
+    page_title="Crypto Predictor Pro - Auto SL/TP Engine",
     page_icon="⚡",
     layout="wide",
 )
 
-st.title("⚡ Crypto Predictor — Sistema de Señales y Entradas Automáticas")
+st.title("⚡ Crypto Predictor Pro — Trading 100% Automático (Auto SL/TP)")
 
-# Inicialización del simulador
+# Memoria de sesión para balance, posiciones fijas e historial
 if "paper_balance" not in st.session_state:
   st.session_state.paper_balance = 10000.0
 if "active_trade" not in st.session_state:
   st.session_state.active_trade = None
 if "trade_history" not in st.session_state:
   st.session_state.trade_history = []
+if "last_close_event" not in st.session_state:
+  st.session_state.last_close_event = None
 
 # ---------------------------------------------------------
-# 1. BARRA LATERAL: CONFIGURACIÓN Y AUTO-TRADING TOGGLE
+# 1. BARRA LATERAL: CONFIGURACIÓN Y AUTO-TRADING
 # ---------------------------------------------------------
 st.sidebar.header("⚙️ Configuración del Par")
 
@@ -46,9 +48,9 @@ interval = st.sidebar.selectbox(
     "Temporalidad de Velas", ["5m", "15m", "1h", "4h"], index=1
 )
 
-st.sidebar.header("🤖 Modo de Ejecución")
+st.sidebar.header("🤖 Piloto Automático")
 auto_execute = st.sidebar.toggle(
-    "Auto-Abrir Operación al Detectar Señal", value=False
+    "Activar Apertura y Cierre 100% Automático", value=True
 )
 signal_threshold = st.sidebar.slider(
     "Umbral Mínimo de Confianza para Entrar (%)",
@@ -58,16 +60,16 @@ signal_threshold = st.sidebar.slider(
     step=1,
 )
 
-st.sidebar.header("🛡️ Gestión de Riesgo (ATR)")
-trade_amount_usd = st.sidebar.number_input(
-    "Monto por Operación ($)", min_value=100, max_value=5000, value=1000
-)
+st.sidebar.header("🛡️ Parámetros de Salida (SL / TP)")
 risk_reward_ratio = st.sidebar.slider(
     "Ratio Riesgo / Beneficio (R:R)",
     min_value=1.0,
     max_value=3.5,
     value=2.5,
     step=0.1,
+)
+trade_amount_usd = st.sidebar.number_input(
+    "Monto por Operación ($)", min_value=100, max_value=5000, value=1000
 )
 min_whale_usd = st.sidebar.slider(
     "Filtro de Ballenas (USD)",
@@ -81,7 +83,7 @@ auto_refresh = st.sidebar.checkbox("Activar Auto-Refresco (1s)", value=True)
 candle_limit = 150
 
 # ---------------------------------------------------------
-# 2. CONEXIÓN API Y EXTRACCIÓN DE DATOS
+# 2. CONEXIÓN API EN TIEMPO REAL (OKX)
 # ---------------------------------------------------------
 HEADERS = {
     "User-Agent": (
@@ -172,7 +174,7 @@ if data.empty or len(data) < 50:
 
 
 # ---------------------------------------------------------
-# 3. TEMPORIZADOR DE VELA Y MOTOR TÉCNICO
+# 3. TEMPORIZADOR Y CÁLCULO ALGORÍTMICO DE NIVELES
 # ---------------------------------------------------------
 def get_candle_countdown(interval_str):
   interval_minutes = {"5m": 5, "15m": 15, "1h": 60, "4h": 240}
@@ -233,48 +235,47 @@ reasons = []
 
 if last_row["EMA_20"] > last_row["EMA_50"]:
   score += 35
-  reasons.append("Cruce Alcista: EMA 20 por encima de EMA 50.")
+  reasons.append("EMA 20 por encima de EMA 50 (Estructura Alcista).")
 else:
   score -= 35
-  reasons.append("Cruce Bajista: EMA 20 por debajo de EMA 50.")
+  reasons.append("EMA 20 por debajo de EMA 50 (Estructura Bajista).")
 
 if last_row["Close"] > last_row["EMA_200"]:
   score += 25
-  reasons.append("Tendencia Macro Alcista: Precio sobre EMA 200.")
+  reasons.append("Precio cotizando sobre la EMA 200 Macro.")
 else:
   score -= 25
-  reasons.append("Tendencia Macro Bajista: Precio bajo EMA 200.")
+  reasons.append("Precio cotizando bajo la EMA 200 Macro.")
 
 if last_row["RSI"] < 35:
   score += 30
-  reasons.append("RSI en Sobreventa (<35): Potencial rebote al alza.")
+  reasons.append("RSI en sobreventa (<35): Zona de rebote.")
 elif last_row["RSI"] > 65:
   score -= 30
-  reasons.append("RSI en Sobrecompra (>65): Potencial corrección a la baja.")
+  reasons.append("RSI en sobrecompra (>65): Zona de caída.")
 else:
   if last_row["RSI"] > prev_row["RSI"]:
     score += 10
-    reasons.append("Impulso de Momentum RSI Ascendente.")
+    reasons.append("Impulso ascendente en oscilador RSI.")
   else:
     score -= 10
-    reasons.append("Pérdida de Momentum RSI.")
+    reasons.append("Pérdida de momentum en oscilador RSI.")
 
 total_vol = live_buy_vol + live_sell_vol
 buy_pct = (live_buy_vol / total_vol * 100) if total_vol > 0 else 50.0
 
 if buy_pct > 55:
   score += 10
-  reasons.append(f"Dominio Comprador en Vivo: {buy_pct:.1f}%")
+  reasons.append(f"Order Flow Alcista: Compras en {buy_pct:.1f}% en vivo.")
 elif buy_pct < 45:
   score -= 10
-  reasons.append(f"Dominio Vendedor en Vivo: {100-buy_pct:.1f}%")
+  reasons.append(f"Order Flow Bajista: Ventas en {100-buy_pct:.1f}% en vivo.")
 
 confidence = min(abs(score) + 35, 96.0)
 is_up = True if score >= 0 else False
 candle_prediction = "🟢 SUBIDA" if is_up else "🔴 BAJADA"
 
 expected_range_usd = atr_val * risk_reward_ratio
-expected_range_pct = (expected_range_usd / entry_price) * 100
 
 if is_up:
   take_profit = entry_price + expected_range_usd
@@ -285,13 +286,13 @@ else:
   stop_loss = entry_price + (atr_val * 1.0)
   type_str = "SHORT (VENTA)"
 
-# EVALUACIÓN DE SEÑAL DE ENTRADA AUTOMÁTICA
 should_open_trade = confidence >= signal_threshold
 
 # ---------------------------------------------------------
-# 4. GESTIÓN DE POSICIONES SIMULADAS Y AUTO-EJECUCIÓN
+# 4. MOTOR DE TRADING AUTOMÁTICO (MONITOREO FIJO SL/TP)
 # ---------------------------------------------------------
-# Cierre automático por TP / SL
+
+# A) Monitoreo de posición activa -> Cierre automático cuando toca TP o SL
 if st.session_state.active_trade:
   act = st.session_state.active_trade
   closed_reason = None
@@ -299,39 +300,43 @@ if st.session_state.active_trade:
 
   if act["type"] == "LONG (COMPRA)":
     if entry_price >= act["tp"]:
-      closed_reason = "TAKE PROFIT (ALCANZADO 🟢)"
+      closed_reason = "TAKE PROFIT (ALCANZADO 🎯)"
       pnl_usd = (act["tp"] - act["entry"]) * act["size"]
     elif entry_price <= act["sl"]:
-      closed_reason = "STOP LOSS (EJECUTADO 🔴)"
+      closed_reason = "STOP LOSS (EJECUTADO 🛡️)"
       pnl_usd = (act["sl"] - act["entry"]) * act["size"]
-  else:
+  else:  # SHORT
     if entry_price <= act["tp"]:
-      closed_reason = "TAKE PROFIT (ALCANZADO 🟢)"
+      closed_reason = "TAKE PROFIT (ALCANZADO 🎯)"
       pnl_usd = (act["entry"] - act["tp"]) * act["size"]
     elif entry_price >= act["sl"]:
-      closed_reason = "STOP LOSS (EJECUTADO 🔴)"
+      closed_reason = "STOP LOSS (EJECUTADO 🛡️)"
       pnl_usd = (act["entry"] - act["sl"]) * act["size"]
 
+  # Si el precio tocó alguno de los límites fijados, se cierra la orden automáticamente
   if closed_reason:
     st.session_state.paper_balance += pnl_usd
-    st.session_state.trade_history.append({
+    close_event = {
         "Fecha": datetime.datetime.now().strftime("%H:%M:%S"),
-        "Par": symbol,
+        "Par": act["symbol"],
         "Tipo": act["type"],
         "Entrada": act["entry"],
         "Cierre": entry_price,
         "Resultado": closed_reason,
         "PnL ($)": round(pnl_usd, 2),
-    })
+    }
+    st.session_state.trade_history.append(close_event)
+    st.session_state.last_close_event = close_event
     st.session_state.active_trade = None
 
-# Auto-Ejecución al detectar señal si está activo el toggle y no hay operaciones abiertas
+# B) Apertura automática cuando el algoritmo genera la señal
 if (
     should_open_trade
     and auto_execute
     and st.session_state.active_trade is None
 ):
   pos_size = trade_amount_usd / entry_price
+  # SE FIJAN PERMANENTEMENTE LOS NIVELES DE SL Y TP PARA ESTA OPERACIÓN
   st.session_state.active_trade = {
       "symbol": symbol,
       "type": type_str,
@@ -345,7 +350,7 @@ if (
   }
 
 # ---------------------------------------------------------
-# 5. DASHBOARD E INTERFAZ DE ALERTAS EN TIEMPO REAL
+# 5. INTERFAZ Y REPORTE DE ESTADO
 # ---------------------------------------------------------
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Precio Mercado", f"${entry_price:,.2f}")
@@ -356,48 +361,108 @@ m5.metric("Balance Simulado", f"${st.session_state.paper_balance:,.2f} USDT")
 
 st.markdown("---")
 
-# BANNER DINÁMICO DE ENTRADA A OPERACIÓN
-if should_open_trade:
+# NOTIFICACIÓN DE CIERRE RECIENTE POR SL O TP
+if st.session_state.last_close_event:
+  evt = st.session_state.last_close_event
+  pnl_color = "🟢" if evt["PnL ($)"] >= 0 else "🔴"
+  st.toast(
+      f"Operación Auto-Cerrada por {evt['Resultado']}: PnL"
+      f" ${evt['PnL ($)']:+,.2f}"
+  )
   st.success(
-      f"🚨 **¡SEÑAL DE ENTRADA DETECTADA AHORA!** — Abrir **{type_str}** en"
+      f"🤖 **AUTOMÁTICO:** Última posición en **{evt['Par']} ({evt['Tipo']})**"
+      f" cerrada por **{evt['Resultado']}** a las {evt['Fecha']}. Resultado:"
+      f" {pnl_color} **${evt['PnL ($)']:+,.2f} USDT**"
+  )
+
+# BANNER DE SEÑAL
+if should_open_trade:
+  st.error(
+      f"🚨 **SEÑAL ACTIVA DE ENTRADA AUTOMÁTICA** — Tipo: **{type_str}** en"
       f" **{symbol}**"
   )
-  col_alert1, col_alert2, col_alert3, col_alert4 = st.columns(4)
-  col_alert1.metric("Punto de Entrada Recom.", f"${entry_price:,.2f}")
-  col_alert2.metric("Objetivo Take Profit", f"${take_profit:,.2f}")
-  col_alert3.metric("Límite Stop Loss", f"${stop_loss:,.2f}")
-  col_alert4.metric("Confianza de la Señal", f"{confidence:.1f}%")
-else:
-  st.info(
-      f"⏳ **Buscando Oportunidad de Entrada:** Confianza actual ({confidence:.1f}%)"
-      f" por debajo del umbral mínimo configurado ({signal_threshold}%)."
-  )
+  c1, c2, c3, c4 = st.columns(4)
+  c1.metric("Punto Entrada Fijo", f"${entry_price:,.2f}")
+  c2.metric("Take Profit Fijo (TP)", f"${take_profit:,.2f}")
+  c3.metric("Stop Loss Fijo (SL)", f"${stop_loss:,.2f}")
+  c4.metric("Confianza Algorítmica", f"{confidence:.1f}%")
 
 st.markdown("---")
 
-# VENTANA DE OPERACIONES Y JUSTIFICACIÓN
-st.subheader("🎮 Control de Operación en Vivo")
+# ---------------------------------------------------------
+# 6. COMPRAS Y VENTAS EN VIVO Y RASTREADOR DE BALLENAS
+# ---------------------------------------------------------
+st.subheader("⚖️ Presión Interna de Compra y Venta (Vela Actual en Vivo)")
+
+col_p1, col_p2 = st.columns(2)
+with col_p1:
+  st.metric(
+      "🟢 Volumen de Compras (En Vivo)",
+      f"${live_buy_vol:,.2f}",
+      f"{buy_pct:.1f}% del Mercado",
+  )
+with col_p2:
+  st.metric(
+      "🔴 Volumen de Ventas (En Vivo)",
+      f"${live_sell_vol:,.2f}",
+      f"{100-buy_pct:.1f}% del Mercado",
+  )
+
+st.progress(
+    int(buy_pct),
+    text=(
+        f"Dominio de Compras: {buy_pct:.1f}%  |  Dominio de Ventas:"
+        f" {100-buy_pct:.1f}%"
+    ),
+)
+
+st.markdown("---")
+
+st.subheader(
+    f"🐋 RASTREADOR DE BALLENAS (Órdenes > ${min_whale_usd:,.0f} USD)"
+)
+
+if not whale_df.empty:
+  buy_whales = whale_df[whale_df["Side"] == "buy"]["Total_USD"].sum()
+  sell_whales = whale_df[whale_df["Side"] == "sell"]["Total_USD"].sum()
+
+  col_w1, col_w2, col_w3 = st.columns(3)
+  col_w1.metric("Compras de Ballenas", f"${buy_whales:,.2f}")
+  col_w2.metric("Ventas de Ballenas", f"${sell_whales:,.2f}")
+
+  pressure = (
+      "🟢 COMPRAS INSTITUCIONALES DOMINANTES"
+      if buy_whales >= sell_whales
+      else "🔴 VENTAS INSTITUCIONALES DOMINANTES"
+  )
+  col_w3.metric("Flujo Institucional", pressure)
+
+  st.dataframe(
+      whale_df[["Hora", "Side", "Price", "Size", "Total_USD"]]
+      .head(10)
+      .style.format(
+          {
+              "Price": "${:,.2f}",
+              "Size": "{:,.4f}",
+              "Total_USD": "${:,.2f}",
+          }
+      ),
+      use_container_width=True,
+      height=180,
+  )
+else:
+  st.info("Escaneando transacciones institucionales grandes...")
+
+st.markdown("---")
+
+# ---------------------------------------------------------
+# 7. ESTADO DE POSICIÓN ACTIVA Y FIJACIÓN DE SL/TP
+# ---------------------------------------------------------
+st.subheader("🎮 Estado de Posición y Monitor de Cierre Automático")
 col_sim1, col_sim2 = st.columns([1, 2])
 
 with col_sim1:
-  if st.session_state.active_trade is None:
-    st.write(f"**Próxima Entrada:** `{type_str}`")
-    st.write(f"**Monto Aislado:** `${trade_amount_usd:,.2f} USDT`")
-    if st.button("🚀 Entrar a la Operación Manualmente"):
-      pos_size = trade_amount_usd / entry_price
-      st.session_state.active_trade = {
-          "symbol": symbol,
-          "type": type_str,
-          "entry": entry_price,
-          "tp": take_profit,
-          "sl": stop_loss,
-          "size": pos_size,
-          "amount_usd": trade_amount_usd,
-          "reasons": reasons,
-          "time": datetime.datetime.now().strftime("%H:%M:%S"),
-      }
-      st.rerun()
-  else:
+  if st.session_state.active_trade:
     act = st.session_state.active_trade
     floating_pnl = (
         (entry_price - act["entry"]) * act["size"]
@@ -405,9 +470,14 @@ with col_sim1:
         else (act["entry"] - entry_price) * act["size"]
     )
     pnl_symbol = "🟢" if floating_pnl >= 0 else "🔴"
-    st.warning(f"**OPERACIÓN EN CURSO:** {act['type']}")
-    st.write(f"**PnL Flotante:** {pnl_symbol} `${floating_pnl:+,.2f} USDT`")
-    if st.button("❌ Cerrar Operación Inmediatamente"):
+
+    st.warning(f"**POSICIÓN ABIERTA:** {act['type']}")
+    st.write(f"• **Entrada:** `${act['entry']:,.2f}`")
+    st.write(f"• **Take Profit Fijo:** `${act['tp']:,.2f}`")
+    st.write(f"• **Stop Loss Fijo:** `${act['sl']:,.2f}`")
+    st.write(f"• **PnL Flotante:** {pnl_symbol} `${floating_pnl:+,.2f} USDT`")
+
+    if st.button("❌ Cierre Manual de Emergencia"):
       st.session_state.paper_balance += floating_pnl
       st.session_state.trade_history.append({
           "Fecha": datetime.datetime.now().strftime("%H:%M:%S"),
@@ -415,20 +485,23 @@ with col_sim1:
           "Tipo": act["type"],
           "Entrada": act["entry"],
           "Cierre": entry_price,
-          "Resultado": "MANUAL_CLOSE",
+          "Resultado": "CIERRE_MANUAL",
           "PnL ($)": round(floating_pnl, 2),
       })
       st.session_state.active_trade = None
       st.rerun()
+  else:
+    st.info("🤖 **Piloto Automático:** En espera de señal de entrada...")
+    st.write(f"**Próximo TP Estimado:** `${take_profit:,.2f}`")
+    st.write(f"**Próximo SL Estimado:** `${stop_loss:,.2f}`")
 
 with col_sim2:
-  st.markdown("##### 📝 Justificación Técnica de la Entrada Actual:")
+  st.markdown("##### 📝 Justificación Técnica de la Estrategia:")
   for idx, r in enumerate(reasons, 1):
     st.markdown(f"**{idx}.** {r}")
 
-# HISTORIAL DE OPERACIONES CERRADAS
 if st.session_state.trade_history:
-  st.markdown("##### 📜 Historial de Operaciones Cerradas")
+  st.markdown("##### 📜 Historial de Operaciones Auto-Cerradas")
   st.dataframe(
       pd.DataFrame(st.session_state.trade_history),
       use_container_width=True,
@@ -438,7 +511,7 @@ if st.session_state.trade_history:
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 6. ANÁLISIS TÉCNICO Y PRESIÓN DE MERCADO
+# 8. GRÁFICOS TÉCNICOS
 # ---------------------------------------------------------
 st.subheader(
     f"🎯 Análisis Técnico Profesional ({interval}) — {symbol}"
@@ -449,7 +522,7 @@ st.subheader("📊 Indicador RSI")
 st.line_chart(df_processed["RSI"])
 
 # ---------------------------------------------------------
-# 7. CICLO DE AUTO-REFRESCO (1 SEGUNDO)
+# 9. AUTO-REFRESCO CADA 1 SEGUNDO
 # ---------------------------------------------------------
 if auto_refresh:
   time.sleep(1)
