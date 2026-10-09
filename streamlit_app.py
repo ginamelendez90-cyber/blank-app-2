@@ -56,7 +56,6 @@ if trading_mode != "Simulación (Paper)":
   if not BINANCE_AVAILABLE:
     st.sidebar.error("❌ Instala 'python-binance' en requirements.txt")
   else:
-    # Intenta leer de secrets, de lo contrario pide al usuario
     try:
       binance_api_key = st.secrets["binance"]["api_key"]
       binance_api_secret = st.secrets["binance"]["api_secret"]
@@ -69,7 +68,6 @@ if trading_mode != "Simulación (Paper)":
           "Binance API Secret", type="password"
       )
 
-# SALVAGUARDA 1: Confirmación explícita para mercado real
 live_confirm = False
 if trading_mode == "Binance REAL (Live)":
   live_confirm = st.sidebar.checkbox(
@@ -80,11 +78,16 @@ if trading_mode == "Binance REAL (Live)":
         "Debes confirmar la casilla para habilitar órdenes reales."
     )
 
-# SALVAGUARDA 2: Interruptor de pánico
 emergency_stop = st.sidebar.button("🚨 BOTÓN DE PÁNICO: DETENER BOT")
 if emergency_stop:
   st.session_state.is_executing = False
   st.sidebar.error("🛑 Bot congelado por orden del usuario.")
+
+# Botón adicional para limpiar sesión si hay conflictos
+if st.sidebar.button("🧹 Limpiar Estado de Posiciones"):
+  st.session_state.active_trade = None
+  st.session_state.is_executing = False
+  st.success("Estado limpiado correctamente.")
 
 st.sidebar.header("⚙️ Configuración del Par")
 pair_options = {
@@ -136,7 +139,7 @@ auto_refresh = st.sidebar.checkbox("Activar Auto-Refresco (1s)", value=True)
 candle_limit = 150
 
 # ---------------------------------------------------------
-# 2. CLIENTE BINANCE Y FUNCIONES DE EJECUCIÓN CON SALVAGUARDAS
+# 2. CLIENTE BINANCE Y FUNCIONES DE EJECUCIÓN
 # ---------------------------------------------------------
 binance_client = None
 
@@ -155,14 +158,11 @@ if (
 
 
 def execute_binance_trade(symbol_raw, side_type, amount_usd, entry, tp, sl):
-  """Ejecuta orden en Binance con formateo estricto de precisión y verificación de saldo."""
   if not binance_client:
     return None, "Cliente de Binance no configurado correctamente."
 
   try:
     binance_symbol = symbol_raw.replace("-", "")
-
-    # SALVAGUARDA 3: Verificación previa de balance
     account = binance_client.get_account()
     usdt_balance = sum(
         float(b["free"]) for b in account["balances"] if b["asset"] == "USDT"
@@ -175,18 +175,15 @@ def execute_binance_trade(symbol_raw, side_type, amount_usd, entry, tp, sl):
           f" ${amount_usd})",
       )
 
-    # SALVAGUARDA 4: Formateo de precisión según reglas del par
     ticker = binance_client.get_symbol_ticker(symbol=binance_symbol)
     curr_price = float(ticker["price"])
     raw_qty = amount_usd / curr_price
 
-    # Ajuste basico de precision (ej. BTC 5 decimales, SOL 2 decimales)
     qty_precision = 5 if "BTC" in symbol_raw else 2
     quantity = round(raw_qty, qty_precision)
 
     order_side = SIDE_BUY if "LONG" in side_type else SIDE_SELL
 
-    # Envío de Orden Mercado Principal
     main_order = binance_client.create_order(
         symbol=binance_symbol,
         side=order_side,
@@ -415,28 +412,34 @@ if st.session_state.active_trade:
   closed_reason = None
   pnl_usd = 0.0
 
-  if act["type"] == "LONG (COMPRA)":
-    if entry_price >= act["tp"]:
+  act_type = act.get("type", "LONG (COMPRA)")
+  act_tp = act.get("tp", take_profit)
+  act_sl = act.get("sl", stop_loss)
+  act_entry = act.get("entry", entry_price)
+  act_size = act.get("size", 1.0)
+
+  if act_type == "LONG (COMPRA)":
+    if entry_price >= act_tp:
       closed_reason = "TAKE PROFIT (ALCANZADO 🎯)"
-      pnl_usd = (act["tp"] - act["entry"]) * act["size"]
-    elif entry_price <= act["sl"]:
+      pnl_usd = (act_tp - act_entry) * act_size
+    elif entry_price <= act_sl:
       closed_reason = "STOP LOSS (EJECUTADO 🛡️)"
-      pnl_usd = (act["sl"] - act["entry"]) * act["size"]
+      pnl_usd = (act_sl - act_entry) * act_size
   else:
-    if entry_price <= act["tp"]:
+    if entry_price <= act_tp:
       closed_reason = "TAKE PROFIT (ALCANZADO 🎯)"
-      pnl_usd = (act["entry"] - act["tp"]) * act["size"]
-    elif entry_price >= act["sl"]:
+      pnl_usd = (act_entry - act_tp) * act_size
+    elif entry_price >= act_sl:
       closed_reason = "STOP LOSS (EJECUTADO 🛡️)"
-      pnl_usd = (act["entry"] - act["sl"]) * act["size"]
+      pnl_usd = (act_entry - act_sl) * act_size
 
   if closed_reason:
     st.session_state.paper_balance += pnl_usd
     close_event = {
         "Fecha": datetime.datetime.now().strftime("%H:%M:%S"),
-        "Par": act["symbol"],
-        "Tipo": act["type"],
-        "Entrada": act["entry"],
+        "Par": act.get("symbol", symbol),
+        "Tipo": act_type,
+        "Entrada": act_entry,
         "Cierre": entry_price,
         "Resultado": closed_reason,
         "PnL ($)": round(pnl_usd, 2),
@@ -446,7 +449,7 @@ if st.session_state.active_trade:
     st.session_state.active_trade = None
     st.session_state.is_executing = False
 
-# SALVAGUARDA 5: Disparo de Orden con Cerrojo Anti-Duplicación (Debounce)
+# Disparo de Orden con Cerrojo Anti-Duplicación
 if (
     should_open_trade
     and auto_execute
@@ -455,13 +458,12 @@ if (
     and not emergency_stop
 ):
 
-  # Verificar si se cumple confirmación en modo Binance Real
   can_proceed = True
   if trading_mode == "Binance REAL (Live)" and not live_confirm:
     can_proceed = False
 
   if can_proceed:
-    st.session_state.is_executing = True  # Bloquear nuevas entradas
+    st.session_state.is_executing = True
 
     binance_res = "OK"
     if trading_mode != "Simulación (Paper)":
@@ -590,17 +592,24 @@ col_sim1, col_sim2 = st.columns([1, 2])
 with col_sim1:
   if st.session_state.active_trade:
     act = st.session_state.active_trade
+    act_mode = act.get("mode", trading_mode)
+    act_type = act.get("type", type_str)
+    act_entry = act.get("entry", entry_price)
+    act_tp = act.get("tp", take_profit)
+    act_sl = act.get("sl", stop_loss)
+    act_size = act.get("size", 1.0)
+
     floating_pnl = (
-        (entry_price - act["entry"]) * act["size"]
-        if act["type"] == "LONG (COMPRA)"
-        else (act["entry"] - entry_price) * act["size"]
+        (entry_price - act_entry) * act_size
+        if act_type == "LONG (COMPRA)"
+        else (act_entry - entry_price) * act_size
     )
     pnl_symbol = "🟢" if floating_pnl >= 0 else "🔴"
 
-    st.warning(f"**POSICIÓN ABIERTA ({act['mode']}):** {act['type']}")
-    st.write(f"• **Entrada:** `${act['entry']:,.2f}`")
-    st.write(f"• **Take Profit Fijo:** `${act['tp']:,.2f}`")
-    st.write(f"• **Stop Loss Fijo:** `${act['sl']:,.2f}`")
+    st.warning(f"**POSICIÓN ABIERTA ({act_mode}):** {act_type}")
+    st.write(f"• **Entrada:** `${act_entry:,.2f}`")
+    st.write(f"• **Take Profit Fijo:** `${act_tp:,.2f}`")
+    st.write(f"• **Stop Loss Fijo:** `${act_sl:,.2f}`")
     st.write(f"• **PnL Flotante:** {pnl_symbol} `${floating_pnl:+,.2f} USDT`")
 
     if st.button("❌ Cierre Manual de Emergencia"):
@@ -608,8 +617,8 @@ with col_sim1:
       st.session_state.trade_history.append({
           "Fecha": datetime.datetime.now().strftime("%H:%M:%S"),
           "Par": symbol,
-          "Tipo": act["type"],
-          "Entrada": act["entry"],
+          "Tipo": act_type,
+          "Entrada": act_entry,
           "Cierre": entry_price,
           "Resultado": "CIERRE_MANUAL",
           "PnL ($)": round(floating_pnl, 2),
