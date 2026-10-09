@@ -1,3 +1,4 @@
+import datetime
 import time
 import numpy as np
 import pandas as pd
@@ -108,7 +109,36 @@ if data.empty or len(data) < 50:
 
 
 # ---------------------------------------------------------
-# 3. MOTOR DE CÁLCULO TÉCNICO Y FUNDAMENTAL
+# 3. CÁLCULO DE TIEMPO RESTANTE DE LA VELA ACTUAL
+# ---------------------------------------------------------
+def get_candle_countdown(interval_str):
+  # Mapeo de intervalos en minutos
+  interval_minutes = {
+      "5m": 5,
+      "15m": 15,
+      "1h": 60,
+      "4h": 240,
+      "1d": 1440,
+  }
+  duration_mins = interval_minutes.get(interval_str, 15)
+  duration_seconds = duration_mins * 60
+
+  now = datetime.datetime.now(datetime.timezone.utc)
+  epoch_seconds = now.timestamp()
+
+  # Calcular segundos restantes para la siguiente vela
+  seconds_into_candle = epoch_seconds % duration_seconds
+  seconds_remaining = int(duration_seconds - seconds_into_candle)
+
+  mins_left = seconds_remaining // 60
+  secs_left = seconds_remaining % 60
+  return f"{mins_left:02d}:{secs_left:02d}"
+
+
+candle_countdown = get_candle_countdown(interval)
+
+# ---------------------------------------------------------
+# 4. MOTOR DE CÁLCULO TÉCNICO Y FUNDAMENTAL
 # ---------------------------------------------------------
 def build_pro_indicators(df_in):
   df = df_in.copy()
@@ -182,13 +212,14 @@ else:
 confidence = min(abs(score) + 35, 96.0)
 
 # ---------------------------------------------------------
-# 4. INTERFAZ PRINCIPAL - MÉTRICAS Y FICHA OPERATIVA
+# 5. INTERFAZ PRINCIPAL - MÉTRICAS Y TEMPORIZADOR DE VELA
 # ---------------------------------------------------------
-m1, m2, m3, m4 = st.columns(4)
+m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Precio Mercado", f"${entry_price:,.2f}")
-m2.metric("Predicción Próxima Vela", candle_prediction)
-m3.metric("Rango Proyectado (ATR)", f"±${expected_range_usd:,.2f}")
-m4.metric("Movimiento Estimado", f"{expected_range_pct:.2f}%")
+m2.metric("Predicción Vela Actual", candle_prediction)
+m3.metric("⏳ Cierre de Vela en", candle_countdown)
+m4.metric("Rango Proyectado", f"±${expected_range_usd:,.2f}")
+m5.metric("Movimiento Est.", f"{expected_range_pct:.2f}%")
 
 st.markdown("---")
 
@@ -205,7 +236,7 @@ with t4:
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 5. GRÁFICOS NATIVOS (SIN PLOTLY)
+# 6. GRÁFICOS Y ANÁLISIS TÉCNICO / FUNDAMENTAL
 # ---------------------------------------------------------
 st.subheader(f"🎯 Análisis Técnico Profesional — {symbol}")
 st.line_chart(df_processed[["Close", "EMA_20", "EMA_50", "EMA_200"]])
@@ -213,9 +244,6 @@ st.line_chart(df_processed[["Close", "EMA_20", "EMA_50", "EMA_200"]])
 st.subheader("📊 Indicador RSI")
 st.line_chart(df_processed["RSI"])
 
-# ---------------------------------------------------------
-# 6. ANÁLISIS FUNDAMENTAL Y MACRO
-# ---------------------------------------------------------
 st.subheader("🏛️ Módulo de Análisis Fundamental y Contexto Macro")
 col_f1, col_f2, col_f3 = st.columns(3)
 
@@ -244,7 +272,7 @@ with col_f3:
   st.markdown(f"**Estructura Fibonacci:**\n#### {fib_zone}")
 
 # ---------------------------------------------------------
-# 7. CICLO DE AUTO-REFRESCO
+# 7. CICLO DE AUTO-REFRESCO (1 SEGUNDO)
 # ---------------------------------------------------------
 if auto_refresh:
   time.sleep(1)
