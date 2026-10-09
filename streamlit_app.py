@@ -14,7 +14,7 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("⚡ Crypto Predictor & Quantitative Engine — Modo Pro")
+st.title("⚡ Crypto Predictor & Alerta de Oportunidades Pro (X5 / X10)")
 
 # ---------------------------------------------------------
 # 1. BARRA LATERAL: PARÁMETROS Y GESTIÓN DE RIESGO
@@ -43,7 +43,7 @@ risk_reward_ratio = st.sidebar.slider(
     "Ratio Riesgo / Beneficio (R:R)",
     min_value=1.0,
     max_value=3.5,
-    value=2.0,
+    value=2.5,
     step=0.1,
 )
 
@@ -112,21 +112,12 @@ if data.empty or len(data) < 50:
 # 3. CÁLCULO DE TIEMPO RESTANTE DE LA VELA ACTUAL
 # ---------------------------------------------------------
 def get_candle_countdown(interval_str):
-  # Mapeo de intervalos en minutos
-  interval_minutes = {
-      "5m": 5,
-      "15m": 15,
-      "1h": 60,
-      "4h": 240,
-      "1d": 1440,
-  }
+  interval_minutes = {"5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
   duration_mins = interval_minutes.get(interval_str, 15)
   duration_seconds = duration_mins * 60
 
   now = datetime.datetime.now(datetime.timezone.utc)
   epoch_seconds = now.timestamp()
-
-  # Calcular segundos restantes para la siguiente vela
   seconds_into_candle = epoch_seconds % duration_seconds
   seconds_remaining = int(duration_seconds - seconds_into_candle)
 
@@ -137,8 +128,9 @@ def get_candle_countdown(interval_str):
 
 candle_countdown = get_candle_countdown(interval)
 
+
 # ---------------------------------------------------------
-# 4. MOTOR DE CÁLCULO TÉCNICO Y FUNDAMENTAL
+# 4. MOTOR TÉCNICO, FUNDAMENTAL Y DETECTOR DE OPORTUNIDADES
 # ---------------------------------------------------------
 def build_pro_indicators(df_in):
   df = df_in.copy()
@@ -159,6 +151,10 @@ def build_pro_indicators(df_in):
   ranges = pd.concat([high_low, high_close, low_close], axis=1)
   true_range = np.max(ranges, axis=1)
   df["ATR"] = true_range.rolling(14).mean()
+
+  # Volumen Promedio y Filtro de Explosión de Volumen
+  df["Vol_SMA"] = df["Volume"].rolling(window=20).mean()
+  df["Volume_Surge"] = df["Volume"] > (df["Vol_SMA"] * 1.8)
 
   return df.dropna()
 
@@ -204,15 +200,23 @@ expected_range_pct = (expected_range_usd / entry_price) * 100
 
 if is_up:
   take_profit = entry_price + expected_range_usd
-  stop_loss = entry_price - (atr_val * 1.2)
+  stop_loss = entry_price - (atr_val * 1.0)
 else:
   take_profit = entry_price - expected_range_usd
-  stop_loss = entry_price + (atr_val * 1.2)
+  stop_loss = entry_price + (atr_val * 1.0)
 
 confidence = min(abs(score) + 35, 96.0)
 
+# --- DETECTOR DE OPORTUNIDAD X5 / X10 DE ALTO IMPULSO ---
+# Se activa si la confianza es alta (>80%), hay volumen masivo y alta volatilidad
+is_high_expansion_setup = (
+    confidence >= 82
+    and last_row["Volume_Surge"]
+    and (atr_val > df_processed["ATR"].mean())
+)
+
 # ---------------------------------------------------------
-# 5. INTERFAZ PRINCIPAL - MÉTRICAS Y TEMPORIZADOR DE VELA
+# 5. INTERFAZ PRINCIPAL Y ALERTAS DE ALTO IMPULSO
 # ---------------------------------------------------------
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Precio Mercado", f"${entry_price:,.2f}")
@@ -220,6 +224,26 @@ m2.metric("Predicción Vela Actual", candle_prediction)
 m3.metric("⏳ Cierre de Vela en", candle_countdown)
 m4.metric("Rango Proyectado", f"±${expected_range_usd:,.2f}")
 m5.metric("Movimiento Est.", f"{expected_range_pct:.2f}%")
+
+st.markdown("---")
+
+# Alerta Visual Dinámica para Oportunidades X5 / X10
+if is_high_expansion_setup:
+  st.error(
+      "🚀 **¡ALERTA PRO: OPORTUNIDAD DE ALTO IMPULSO DETECTADA (SETUP X5/X10"
+      " HABILITADO)!**"
+  )
+  st.markdown(
+      "Se ha identificado un **despegue de volumen institucional** masivo"
+      f" combinado con expansión de volatilidad en **{symbol}**. Las"
+      " condiciones técnicas son óptimas para evaluar posiciones apalancadas"
+      " con estricta gestión de riesgo."
+  )
+else:
+  st.info(
+      "⏳ **Estado de Mercado:** Buscando configuraciones de alta expansión..."
+      " (Esperando ruptura de volumen y volatilidad)."
+  )
 
 st.markdown("---")
 
@@ -257,7 +281,7 @@ with col_f1:
 
 with col_f2:
   volatility_status = (
-      "ALTA VOLATILIDAD"
+      "ALTA VOLATILIDAD (Expansión)"
       if atr_val > df_processed["ATR"].mean()
       else "CONSOLIDACIÓN"
   )
