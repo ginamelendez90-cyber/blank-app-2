@@ -6,26 +6,26 @@ import requests
 import streamlit as st
 
 # ---------------------------------------------------------
-# CONFIGURACIÓN DE PÁGINA Y ESTADO PERSISTENTE (PAPER TRADING)
+# CONFIGURACIÓN DE PÁGINA Y ESTADO PERSISTENTE
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="Crypto Predictor Pro Engine - Paper Trader",
+    page_title="Crypto Predictor Pro - Auto Signal Engine",
     page_icon="⚡",
     layout="wide",
 )
 
-st.title("⚡ Crypto Predictor & Simulador de Trading en Tiempo Real")
+st.title("⚡ Crypto Predictor — Sistema de Señales y Entradas Automáticas")
 
-# Inicialización de variables de sesión para el Paper Trading
+# Inicialización del simulador
 if "paper_balance" not in st.session_state:
-  st.session_state.paper_balance = 10000.0  # Balance inicial $10,000 USDT
+  st.session_state.paper_balance = 10000.0
 if "active_trade" not in st.session_state:
-  st.session_state.active_trade = None  # Estructura de orden activa
+  st.session_state.active_trade = None
 if "trade_history" not in st.session_state:
-  st.session_state.trade_history = []  # Historial de operaciones cerradas
+  st.session_state.trade_history = []
 
 # ---------------------------------------------------------
-# 1. BARRA LATERAL: CONFIGURACIÓN Y CONTROL DEL SIMULADOR
+# 1. BARRA LATERAL: CONFIGURACIÓN Y AUTO-TRADING TOGGLE
 # ---------------------------------------------------------
 st.sidebar.header("⚙️ Configuración del Par")
 
@@ -46,18 +46,22 @@ interval = st.sidebar.selectbox(
     "Temporalidad de Velas", ["5m", "15m", "1h", "4h"], index=1
 )
 
-st.sidebar.header("💰 Simulador de Trading")
-trade_amount_usd = st.sidebar.number_input(
-    "Monto por Operación Simulada ($)", min_value=100, max_value=5000, value=1000
+st.sidebar.header("🤖 Modo de Ejecución")
+auto_execute = st.sidebar.toggle(
+    "Auto-Abrir Operación al Detectar Señal", value=False
+)
+signal_threshold = st.sidebar.slider(
+    "Umbral Mínimo de Confianza para Entrar (%)",
+    min_value=70,
+    max_value=90,
+    value=80,
+    step=1,
 )
 
-if st.sidebar.button("🔄 Reiniciar Balance Simulado ($10,000)"):
-  st.session_state.paper_balance = 10000.0
-  st.session_state.active_trade = None
-  st.session_state.trade_history = []
-  st.success("Simulador reiniciado correctamente.")
-
 st.sidebar.header("🛡️ Gestión de Riesgo (ATR)")
+trade_amount_usd = st.sidebar.number_input(
+    "Monto por Operación ($)", min_value=100, max_value=5000, value=1000
+)
 risk_reward_ratio = st.sidebar.slider(
     "Ratio Riesgo / Beneficio (R:R)",
     min_value=1.0,
@@ -65,7 +69,6 @@ risk_reward_ratio = st.sidebar.slider(
     value=2.5,
     step=0.1,
 )
-
 min_whale_usd = st.sidebar.slider(
     "Filtro de Ballenas (USD)",
     min_value=5000,
@@ -73,11 +76,12 @@ min_whale_usd = st.sidebar.slider(
     value=10000,
     step=5000,
 )
+
 auto_refresh = st.sidebar.checkbox("Activar Auto-Refresco (1s)", value=True)
 candle_limit = 150
 
 # ---------------------------------------------------------
-# 2. CONEXIÓN API Y EXTRACCIÓN DE DATOS EN VIVO
+# 2. CONEXIÓN API Y EXTRACCIÓN DE DATOS
 # ---------------------------------------------------------
 HEADERS = {
     "User-Agent": (
@@ -168,7 +172,7 @@ if data.empty or len(data) < 50:
 
 
 # ---------------------------------------------------------
-# 3. CONTEO REGRESIVO DE LA VELA ACTUAL
+# 3. TEMPORIZADOR DE VELA Y MOTOR TÉCNICO
 # ---------------------------------------------------------
 def get_candle_countdown(interval_str):
   interval_minutes = {"5m": 5, "15m": 15, "1h": 60, "4h": 240}
@@ -192,9 +196,6 @@ def get_candle_countdown(interval_str):
 candle_countdown = get_candle_countdown(interval)
 
 
-# ---------------------------------------------------------
-# 4. MOTOR TÉCNICO Y GENERADOR DE JUSTIFICACIÓN DE OPERACIÓN
-# ---------------------------------------------------------
 def build_pro_indicators(df_in):
   df = df_in.copy()
   df["EMA_20"] = df["Close"].ewm(span=20, adjust=False).mean()
@@ -230,49 +231,47 @@ atr_val = float(last_row["ATR"])
 score = 0
 reasons = []
 
-# Análisis Estructural
 if last_row["EMA_20"] > last_row["EMA_50"]:
   score += 35
-  reasons.append("EMA 20 cruzada al alza sobre EMA 50 (Estructura de Alineación Alcista).")
+  reasons.append("Cruce Alcista: EMA 20 por encima de EMA 50.")
 else:
   score -= 35
-  reasons.append("EMA 20 por debajo de EMA 50 (Estructura de Presión Bajista).")
+  reasons.append("Cruce Bajista: EMA 20 por debajo de EMA 50.")
 
 if last_row["Close"] > last_row["EMA_200"]:
   score += 25
-  reasons.append("Precio cotizando por encima de la EMA 200 Macro (Tendencia Alcista Dominante).")
+  reasons.append("Tendencia Macro Alcista: Precio sobre EMA 200.")
 else:
   score -= 25
-  reasons.append("Precio cotizando por debajo de la EMA 200 Macro (Tendencia Bajista Dominante).")
+  reasons.append("Tendencia Macro Bajista: Precio bajo EMA 200.")
 
-# Momentum RSI
 if last_row["RSI"] < 35:
   score += 30
-  reasons.append("RSI en zona de sobreventa (<35), alta probabilidad de rebote alcista.")
+  reasons.append("RSI en Sobreventa (<35): Potencial rebote al alza.")
 elif last_row["RSI"] > 65:
   score -= 30
-  reasons.append("RSI en zona de sobrecompra (>65), alta probabilidad de corrección bajista.")
+  reasons.append("RSI en Sobrecompra (>65): Potencial corrección a la baja.")
 else:
   if last_row["RSI"] > prev_row["RSI"]:
     score += 10
-    reasons.append("Pendiente ascendente en el oscilador RSI (Ganancia de momentum compredor).")
+    reasons.append("Impulso de Momentum RSI Ascendente.")
   else:
     score -= 10
-    reasons.append("Pendiente descendente en el oscilador RSI (Pérdida de fuerza compredora).")
+    reasons.append("Pérdida de Momentum RSI.")
 
-# Flujo de Ordenes
 total_vol = live_buy_vol + live_sell_vol
 buy_pct = (live_buy_vol / total_vol * 100) if total_vol > 0 else 50.0
 
 if buy_pct > 55:
   score += 10
-  reasons.append(f"Order Flow positivo: Compras dominan el {buy_pct:.1f}% del volumen en vivo.")
+  reasons.append(f"Dominio Comprador en Vivo: {buy_pct:.1f}%")
 elif buy_pct < 45:
   score -= 10
-  reasons.append(f"Order Flow negativo: Ventas dominan el {100-buy_pct:.1f}% del volumen en vivo.")
+  reasons.append(f"Dominio Vendedor en Vivo: {100-buy_pct:.1f}%")
 
-candle_prediction = "🟢 SUBIDA" if score >= 0 else "🔴 BAJADA"
+confidence = min(abs(score) + 35, 96.0)
 is_up = True if score >= 0 else False
+candle_prediction = "🟢 SUBIDA" if is_up else "🔴 BAJADA"
 
 expected_range_usd = atr_val * risk_reward_ratio
 expected_range_pct = (expected_range_usd / entry_price) * 100
@@ -286,58 +285,67 @@ else:
   stop_loss = entry_price + (atr_val * 1.0)
   type_str = "SHORT (VENTA)"
 
-confidence = min(abs(score) + 35, 96.0)
+# EVALUACIÓN DE SEÑAL DE ENTRADA AUTOMÁTICA
+should_open_trade = confidence >= signal_threshold
 
 # ---------------------------------------------------------
-# 5. MOTOR DE EJECUCIÓN SIMULADA Y CIERRE AUTOMÁTICO DE POSICIONES
+# 4. GESTIÓN DE POSICIONES SIMULADAS Y AUTO-EJECUCIÓN
 # ---------------------------------------------------------
-active_order = st.session_state.active_trade
-
-# 1. Comprobar si hay una orden activa que deba cerrarse por TP o SL
-if active_order:
-  entry = active_order["entry"]
-  tp = active_order["tp"]
-  sl = active_order["sl"]
-  trade_type = active_order["type"]
-  size = active_order["size"]
-
+# Cierre automático por TP / SL
+if st.session_state.active_trade:
+  act = st.session_state.active_trade
   closed_reason = None
   pnl_usd = 0.0
 
-  if trade_type == "LONG (COMPRA)":
-    if entry_price >= tp:
+  if act["type"] == "LONG (COMPRA)":
+    if entry_price >= act["tp"]:
       closed_reason = "TAKE PROFIT (ALCANZADO 🟢)"
-      pnl_usd = (tp - entry) * size
-    elif entry_price <= sl:
+      pnl_usd = (act["tp"] - act["entry"]) * act["size"]
+    elif entry_price <= act["sl"]:
       closed_reason = "STOP LOSS (EJECUTADO 🔴)"
-      pnl_usd = (sl - entry) * size
-  else:  # SHORT
-    if entry_price <= tp:
+      pnl_usd = (act["sl"] - act["entry"]) * act["size"]
+  else:
+    if entry_price <= act["tp"]:
       closed_reason = "TAKE PROFIT (ALCANZADO 🟢)"
-      pnl_usd = (entry - tp) * size
-    elif entry_price >= sl:
+      pnl_usd = (act["entry"] - act["tp"]) * act["size"]
+    elif entry_price >= act["sl"]:
       closed_reason = "STOP LOSS (EJECUTADO 🔴)"
-      pnl_usd = (entry - sl) * size
+      pnl_usd = (act["entry"] - act["sl"]) * act["size"]
 
   if closed_reason:
     st.session_state.paper_balance += pnl_usd
     st.session_state.trade_history.append({
         "Fecha": datetime.datetime.now().strftime("%H:%M:%S"),
         "Par": symbol,
-        "Tipo": trade_type,
-        "Entrada": entry,
+        "Tipo": act["type"],
+        "Entrada": act["entry"],
         "Cierre": entry_price,
         "Resultado": closed_reason,
         "PnL ($)": round(pnl_usd, 2),
     })
     st.session_state.active_trade = None
-    st.success(
-        f"🔔 **Operación Cerrada por {closed_reason}!** Resultado PnL:"
-        f" ${pnl_usd:+,.2f} USDT"
-    )
+
+# Auto-Ejecución al detectar señal si está activo el toggle y no hay operaciones abiertas
+if (
+    should_open_trade
+    and auto_execute
+    and st.session_state.active_trade is None
+):
+  pos_size = trade_amount_usd / entry_price
+  st.session_state.active_trade = {
+      "symbol": symbol,
+      "type": type_str,
+      "entry": entry_price,
+      "tp": take_profit,
+      "sl": stop_loss,
+      "size": pos_size,
+      "amount_usd": trade_amount_usd,
+      "reasons": reasons,
+      "time": datetime.datetime.now().strftime("%H:%M:%S"),
+  }
 
 # ---------------------------------------------------------
-# 6. INTERFAZ PRINCIPAL - DASHBOARD Y VENTANA SIMULADA
+# 5. DASHBOARD E INTERFAZ DE ALERTAS EN TIEMPO REAL
 # ---------------------------------------------------------
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Precio Mercado", f"${entry_price:,.2f}")
@@ -346,164 +354,91 @@ m3.metric("⏳ Cierre de Vela en", candle_countdown)
 m4.metric("Rango Proyectado", f"±${expected_range_usd:,.2f}")
 m5.metric("Balance Simulado", f"${st.session_state.paper_balance:,.2f} USDT")
 
-st.markdown("##### 📈 Comportamiento Reciente (Mini Tendencia)")
-st.line_chart(df_processed["Close"].tail(25), height=120)
+st.markdown("---")
+
+# BANNER DINÁMICO DE ENTRADA A OPERACIÓN
+if should_open_trade:
+  st.success(
+      f"🚨 **¡SEÑAL DE ENTRADA DETECTADA AHORA!** — Abrir **{type_str}** en"
+      f" **{symbol}**"
+  )
+  col_alert1, col_alert2, col_alert3, col_alert4 = st.columns(4)
+  col_alert1.metric("Punto de Entrada Recom.", f"${entry_price:,.2f}")
+  col_alert2.metric("Objetivo Take Profit", f"${take_profit:,.2f}")
+  col_alert3.metric("Límite Stop Loss", f"${stop_loss:,.2f}")
+  col_alert4.metric("Confianza de la Señal", f"{confidence:.1f}%")
+else:
+  st.info(
+      f"⏳ **Buscando Oportunidad de Entrada:** Confianza actual ({confidence:.1f}%)"
+      f" por debajo del umbral mínimo configurado ({signal_threshold}%)."
+  )
 
 st.markdown("---")
 
-# VENTANA DE TRADING SIMULADO (PAPER TRADING EXECUTOR)
-st.subheader("🎮 Ventana de Operaciones Simuladas en Automático")
-
+# VENTANA DE OPERACIONES Y JUSTIFICACIÓN
+st.subheader("🎮 Control de Operación en Vivo")
 col_sim1, col_sim2 = st.columns([1, 2])
 
 with col_sim1:
-  st.markdown("#### 📥 Panel de Entrada Automática")
-  st.write(f"**Capital Aislado:** `${trade_amount_usd:,.2f} USDT`")
-  st.write(f"**Dirección Estimada:** `{type_str}`")
-  st.write(f"**Take Profit Target:** `${take_profit:,.2f}`")
-  st.write(f"**Stop Loss Limit:** `${stop_loss:,.2f}`")
-
   if st.session_state.active_trade is None:
-    if st.button("🚀 Ejecutar Operación Simulada Ahora"):
-      position_size = trade_amount_usd / entry_price
+    st.write(f"**Próxima Entrada:** `{type_str}`")
+    st.write(f"**Monto Aislado:** `${trade_amount_usd:,.2f} USDT`")
+    if st.button("🚀 Entrar a la Operación Manualmente"):
+      pos_size = trade_amount_usd / entry_price
       st.session_state.active_trade = {
           "symbol": symbol,
           "type": type_str,
           "entry": entry_price,
           "tp": take_profit,
           "sl": stop_loss,
-          "size": position_size,
+          "size": pos_size,
           "amount_usd": trade_amount_usd,
           "reasons": reasons,
           "time": datetime.datetime.now().strftime("%H:%M:%S"),
       }
       st.rerun()
   else:
-    st.warning("⚠️ Hay una posición activa en desarrollo...")
-    if st.button("❌ Cerrar Posición al Precio Actual"):
-      active = st.session_state.active_trade
-      pnl = (
-          (entry_price - active["entry"]) * active["size"]
-          if active["type"] == "LONG (COMPRA)"
-          else (active["entry"] - entry_price) * active["size"]
-      )
-      st.session_state.paper_balance += pnl
-      st.session_state.trade_history.append({
-          "Fecha": datetime.datetime.now().strftime("%H:%M:%S"),
-          "Par": symbol,
-          "Tipo": active["type"],
-          "Entrada": active["entry"],
-          "Cierre": entry_price,
-          "Resultado": "MANUAL_CLOSE",
-          "PnL ($)": round(pnl, 2),
-      })
-      st.session_state.active_trade = None
-      st.rerun()
-
-with col_sim2:
-  st.markdown("#### 📝 Informe Técnico y Escrito de Justificación")
-  if st.session_state.active_trade:
     act = st.session_state.active_trade
-    # Calcular PnL flotante no realizado
     floating_pnl = (
         (entry_price - act["entry"]) * act["size"]
         if act["type"] == "LONG (COMPRA)"
         else (act["entry"] - entry_price) * act["size"]
     )
-    pnl_color = "🟢" if floating_pnl >= 0 else "🔴"
+    pnl_symbol = "🟢" if floating_pnl >= 0 else "🔴"
+    st.warning(f"**OPERACIÓN EN CURSO:** {act['type']}")
+    st.write(f"**PnL Flotante:** {pnl_symbol} `${floating_pnl:+,.2f} USDT`")
+    if st.button("❌ Cerrar Operación Inmediatamente"):
+      st.session_state.paper_balance += floating_pnl
+      st.session_state.trade_history.append({
+          "Fecha": datetime.datetime.now().strftime("%H:%M:%S"),
+          "Par": symbol,
+          "Tipo": act["type"],
+          "Entrada": act["entry"],
+          "Cierre": entry_price,
+          "Resultado": "MANUAL_CLOSE",
+          "PnL ($)": round(floating_pnl, 2),
+      })
+      st.session_state.active_trade = None
+      st.rerun()
 
-    st.info(
-        f"**POSICIÓN ACTIVA:** {act['type']} en **{act['symbol']}** | Hora:"
-        f" {act['time']}\n\n"
-        f"• **Precio Entrada:** ${act['entry']:,.2f} | **Precio Actual:**"
-        f" ${entry_price:,.2f}\n\n"
-        f"• **PnL Flotante:** {pnl_color} **${floating_pnl:+,.2f} USDT**"
-    )
+with col_sim2:
+  st.markdown("##### 📝 Justificación Técnica de la Entrada Actual:")
+  for idx, r in enumerate(reasons, 1):
+    st.markdown(f"**{idx}.** {r}")
 
-    st.markdown("##### 📄 Justificación Algorítmica de la Entrada:")
-    for idx, r in enumerate(act["reasons"], 1):
-      st.markdown(f"**{idx}.** {r}")
-  else:
-    st.write(
-        "No hay operaciones abiertas en este instante. Al presionar **'Ejecutar"
-        " Operación Simulada'**, el motor registrará la orden e imprimirá aquí"
-        " la justificación escrita basada en el análisis técnico en tiempo"
-        " real."
-    )
-
-# HISTORIAL DE OPERACIONES SIMULADAS
+# HISTORIAL DE OPERACIONES CERRADAS
 if st.session_state.trade_history:
   st.markdown("##### 📜 Historial de Operaciones Cerradas")
-  df_hist = pd.DataFrame(st.session_state.trade_history)
-  st.dataframe(df_hist, use_container_width=True, height=150)
-
-st.markdown("---")
-
-# ---------------------------------------------------------
-# 7. PRESIÓN DE COMPRA/VENTA Y RASTREADOR DE BALLENAS
-# ---------------------------------------------------------
-st.subheader("⚖️ Presión Interna de Compra y Venta (Vela Actual en Vivo)")
-col_p1, col_p2 = st.columns(2)
-with col_p1:
-  st.metric(
-      "🟢 Volumen de Compras",
-      f"${live_buy_vol:,.2f}",
-      f"{buy_pct:.1f}% del Mercado",
-  )
-with col_p2:
-  st.metric(
-      "🔴 Volumen de Ventas",
-      f"${live_sell_vol:,.2f}",
-      f"{100-buy_pct:.1f}% del Mercado",
-  )
-
-st.progress(
-    int(buy_pct),
-    text=(
-        f"Dominio de Compras: {buy_pct:.1f}%  |  Dominio de Ventas:"
-        f" {100-buy_pct:.1f}%"
-    ),
-)
-
-st.markdown("---")
-
-st.subheader(
-    f"🐋 RASTREADOR DE BALLENAS (Órdenes > ${min_whale_usd:,.0f} USD)"
-)
-
-if not whale_df.empty:
-  buy_whales = whale_df[whale_df["Side"] == "buy"]["Total_USD"].sum()
-  sell_whales = whale_df[whale_df["Side"] == "sell"]["Total_USD"].sum()
-
-  col_w1, col_w2, col_w3 = st.columns(3)
-  col_w1.metric("Compras de Ballenas", f"${buy_whales:,.2f}")
-  col_w2.metric("Ventas de Ballentas", f"${sell_whales:,.2f}")
-
-  pressure = (
-      "🟢 COMPRAS INSTITUCIONALES DOMINANTES"
-      if buy_whales >= sell_whales
-      else "🔴 VENTAS INSTITUCIONALES DOMINANTES"
-  )
-  col_w3.metric("Flujo Institucional", pressure)
-
   st.dataframe(
-      whale_df[["Hora", "Side", "Price", "Size", "Total_USD"]]
-      .head(8)
-      .style.format(
-          {
-              "Price": "${:,.2f}",
-              "Size": "{:,.4f}",
-              "Total_USD": "${:,.2f}",
-          }
-      ),
+      pd.DataFrame(st.session_state.trade_history),
       use_container_width=True,
-      height=160,
+      height=140,
   )
 
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 8. GRÁFICOS TÉCNICOS Y MACRO
+# 6. ANÁLISIS TÉCNICO Y PRESIÓN DE MERCADO
 # ---------------------------------------------------------
 st.subheader(
     f"🎯 Análisis Técnico Profesional ({interval}) — {symbol}"
@@ -514,7 +449,7 @@ st.subheader("📊 Indicador RSI")
 st.line_chart(df_processed["RSI"])
 
 # ---------------------------------------------------------
-# 9. CICLO DE AUTO-REFRESCO (1 SEGUNDO)
+# 7. CICLO DE AUTO-REFRESCO (1 SEGUNDO)
 # ---------------------------------------------------------
 if auto_refresh:
   time.sleep(1)
