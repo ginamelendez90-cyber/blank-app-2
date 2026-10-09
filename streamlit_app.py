@@ -14,7 +14,7 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("⚡ Crypto Predictor & Alerta de Oportunidades Pro (X5 / X10)")
+st.title("⚡ Crypto Predictor & Alerta Pro (5m a 4h Setup X5/X10)")
 
 # ---------------------------------------------------------
 # 1. BARRA LATERAL: PARÁMETROS Y GESTIÓN DE RIESGO
@@ -34,8 +34,9 @@ selected_label = st.sidebar.selectbox(
 )
 symbol = pair_options[selected_label]
 
+# Restringido estrictamente de 5m a 4h según tu preferencia
 interval = st.sidebar.selectbox(
-    "Temporalidad de Velas", ["5m", "15m", "1h", "4h", "1d"], index=1
+    "Temporalidad de Velas", ["5m", "15m", "1h", "4h"], index=1
 )
 
 st.sidebar.header("🛡️ Gestión de Riesgo (ATR)")
@@ -63,7 +64,7 @@ HEADERS = {
 
 
 def fetch_from_okx(symbol: str, interval: str, limit: int = 150):
-  interval_map = {"5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H", "1d": "1Dutc"}
+  interval_map = {"5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H"}
   bar = interval_map.get(interval, "15m")
 
   url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar={bar}&limit={limit}"
@@ -109,10 +110,10 @@ if data.empty or len(data) < 50:
 
 
 # ---------------------------------------------------------
-# 3. CÁLCULO DE TIEMPO RESTANTE DE LA VELA ACTUAL
+# 3. CÁLCULO DE TIEMPO RESTANTE DE LA VELA ACTUAL (5m a 4h)
 # ---------------------------------------------------------
 def get_candle_countdown(interval_str):
-  interval_minutes = {"5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1440}
+  interval_minutes = {"5m": 5, "15m": 15, "1h": 60, "4h": 240}
   duration_mins = interval_minutes.get(interval_str, 15)
   duration_seconds = duration_mins * 60
 
@@ -121,8 +122,12 @@ def get_candle_countdown(interval_str):
   seconds_into_candle = epoch_seconds % duration_seconds
   seconds_remaining = int(duration_seconds - seconds_into_candle)
 
-  mins_left = seconds_remaining // 60
+  hours_left = seconds_remaining // 3600
+  mins_left = (seconds_remaining % 3600) // 60
   secs_left = seconds_remaining % 60
+
+  if hours_left > 0:
+    return f"{hours_left:02d}:{mins_left:02d}:{secs_left:02d}"
   return f"{mins_left:02d}:{secs_left:02d}"
 
 
@@ -153,7 +158,7 @@ def build_pro_indicators(df_in):
   df["ATR"] = true_range.rolling(14).mean()
 
   df["Vol_SMA"] = df["Volume"].rolling(window=20).mean()
-  df["Volume_Surge"] = df["Volume"] > (df["Vol_SMA"] * 1.8)
+  df["Volume_Surge"] = df["Volume"] > (df["Vol_SMA"] * 1.7)
 
   return df.dropna()
 
@@ -207,7 +212,7 @@ else:
 confidence = min(abs(score) + 35, 96.0)
 
 is_high_expansion_setup = (
-    confidence >= 82
+    confidence >= 80
     and last_row["Volume_Surge"]
     and (atr_val > df_processed["ATR"].mean())
 )
@@ -222,7 +227,6 @@ m3.metric("⏳ Cierre de Vela en", candle_countdown)
 m4.metric("Rango Proyectado", f"±${expected_range_usd:,.2f}")
 m5.metric("Movimiento Est.", f"{expected_range_pct:.2f}%")
 
-# Apartado del Minigráfico de rendimiento reciente (últimas 25 velas)
 st.markdown("##### 📈 Comportamiento Reciente (Mini Tendencia)")
 st.line_chart(df_processed["Close"].tail(25), height=120)
 
@@ -230,19 +234,17 @@ st.markdown("---")
 
 if is_high_expansion_setup:
   st.error(
-      "🚀 **¡ALERTA PRO: OPORTUNIDAD DE ALTO IMPULSO DETECTADA (SETUP X5/X10"
-      " HABILITADO)!**"
+      f"🚀 **¡ALERTA PRO: OPORTUNIDAD X5/X10 EN TEMPORALIDAD DE {interval}!**"
   )
   st.markdown(
-      "Se ha identificado un **despegue de volumen institucional** masivo"
-      f" combinado con expansión de volatilidad en **{symbol}**. Las"
-      " condiciones técnicas son óptimas para evaluar posiciones apalancadas"
-      " con estricta gestión de riesgo."
+      "Se detectó un **impulso de volumen institucional** y expansión de"
+      f" volatilidad en **{symbol}** para la temporalidad de **{interval}**."
+      " Estructura lista para operar con gestión de riesgo estricta."
   )
 else:
   st.info(
-      "⏳ **Estado de Mercado:** Buscando configuraciones de alta expansión..."
-      " (Esperando ruptura de volumen y volatilidad)."
+      f"⏳ **Estado de Mercado ({interval}):** Analizando flujos de volumen y"
+      " consolidación de velas..."
   )
 
 st.markdown("---")
@@ -262,7 +264,9 @@ st.markdown("---")
 # ---------------------------------------------------------
 # 6. GRÁFICOS Y ANÁLISIS TÉCNICO / FUNDAMENTAL
 # ---------------------------------------------------------
-st.subheader(f"🎯 Análisis Técnico Profesional — {symbol}")
+st.subheader(
+    f"🎯 Análisis Técnico Profesional ({interval}) — {symbol}"
+)
 st.line_chart(df_processed[["Close", "EMA_20", "EMA_50", "EMA_200"]])
 
 st.subheader("📊 Indicador RSI")
