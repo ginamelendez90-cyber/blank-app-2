@@ -11,12 +11,12 @@ import streamlit as st
 # CONFIGURACIÓN DE PÁGINA
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="Crypto Predictor Pro - Engine Estable",
+    page_title="Crypto Predictor Pro - Stable Engine",
     page_icon="⚡",
     layout="wide",
 )
 
-st.title("⚡ Crypto Predictor Pro — Panel de Control Estable")
+st.title("⚡ Crypto Predictor Pro — Sistema Autónomo Estable")
 
 # Inicialización segura de variables de sesión
 if "paper_balance" not in st.session_state:
@@ -29,7 +29,7 @@ if "last_close_event" not in st.session_state:
   st.session_state.last_close_event = None
 
 # ---------------------------------------------------------
-# 1. BARRA LATERAL
+# 1. BARRA LATERAL: CONTROL Y CREDANCIALES
 # ---------------------------------------------------------
 st.sidebar.header("⚙️ Configuración del Sistema")
 
@@ -92,25 +92,31 @@ min_whale_usd = st.sidebar.slider(
     step=5000,
 )
 
-# Intervalo seguro de refresco para evitar pantalla negra
 refresh_seconds = st.sidebar.slider(
-    "Intervalo de Refresco (segundos)",
+    "Intervalo de Refresco (s)",
     min_value=2,
     max_value=10,
     value=3,
-    help="Valores muy bajos (1s) pueden congelar la interfaz.",
+    help="Evita bloqueos refrescando a un ritmo seguro.",
 )
 auto_refresh = st.sidebar.checkbox("Activar Auto-Refresco Seguro", value=True)
 
+
 # ---------------------------------------------------------
-# 2. CONECTOR DIRECTO A BINANCE (SIN LIBRERÍAS EXTERNAS)
+# 2. CONECTOR A BINANCE (SIN CONSULTA PREVIA DE PRECIO)
 # ---------------------------------------------------------
 def binance_native_trade(
-    symbol_raw, side_type, amount_usd, api_key, api_secret, is_testnet=True
+    symbol_raw,
+    side_type,
+    amount_usd,
+    entry_price,
+    api_key,
+    api_secret,
+    is_testnet=True,
 ):
-  """Ejecuta orden en Binance directamente vía HTTP HMAC SHA256."""
+  """Ejecuta orden en Binance directamente calculando el tamaño con el precio en vivo de OKX para evitar bloqueos regionales de la API de Binance."""
   if not api_key or not api_secret:
-    return None, "Faltan las credenciales API Key / Secret."
+    return None, "Faltan las credenciales API Key / Secret de Binance."
 
   base_url = (
       "https://testnet.binance.vision"
@@ -120,26 +126,17 @@ def binance_native_trade(
   binance_symbol = symbol_raw.replace("-", "")
 
   try:
-    # Obtener precio de mercado
-    p_res = requests.get(
-        f"{base_url}/api/v3/ticker/price?symbol={binance_symbol}", timeout=4
-    ).json()
-    if "price" not in p_res:
-      return None, f"Error obteniendo precio: {p_res}"
-
-    curr_price = float(p_res["price"])
     qty_precision = 5 if "BTC" in symbol_raw else 2
-    quantity = round(amount_usd / curr_price, qty_precision)
+    quantity = round(amount_usd / entry_price, qty_precision)
     side = "BUY" if "LONG" in side_type else "SELL"
 
-    # Preparar parámetros para firma
     params = {
         "symbol": binance_symbol,
         "side": side,
         "type": "MARKET",
         "quantity": quantity,
         "timestamp": int(time.time() * 1000),
-        "recvWindow": 5000,
+        "recvWindow": 10000,
     }
 
     query_string = "&".join([f"{k}={v}" for k, v in params.items()])
@@ -163,7 +160,7 @@ def binance_native_trade(
 
 
 # ---------------------------------------------------------
-# 3. EXTRACCIÓN PROTEGIDA DE DATOS
+# 3. EXTRAER DATOS EN VIVO (OKX PUBLIC API)
 # ---------------------------------------------------------
 HEADERS = {
     "User-Agent": (
@@ -235,17 +232,13 @@ def fetch_live_order_flow(symbol: str, min_usd: float):
   return pd.DataFrame(), pd.DataFrame(), 0.0, 0.0
 
 
-# Carga de datos con mecanismo de fallback seguro
 data = fetch_from_okx(symbol, interval)
 df_trades, whale_df, live_buy_vol, live_sell_vol = fetch_live_order_flow(
     symbol, min_whale_usd
 )
 
 if data.empty or len(data) < 30:
-  st.warning(
-      "⚠️ Conectando con los servidores de datos... Reintentando de forma"
-      " segura."
-  )
+  st.warning("⚠️ Obteniendo datos de mercado... Reintentando.")
   time.sleep(2)
   st.rerun()
 
@@ -369,11 +362,12 @@ if auto_execute and should_open_trade and st.session_state.active_trade is None:
   if trading_mode != "Simulación (Paper)":
     is_tn = trading_mode == "Binance Testnet"
     _, res_msg = binance_native_trade(
-        symbol,
-        type_str,
-        trade_amount_usd,
-        binance_api_key,
-        binance_api_secret,
+        symbol_raw=symbol,
+        side_type=type_str,
+        amount_usd=trade_amount_usd,
+        entry_price=entry_price,
+        api_key=binance_api_key,
+        api_secret=binance_api_secret,
         is_testnet=is_tn,
     )
     if res_msg != "OK":
@@ -395,7 +389,7 @@ if auto_execute and should_open_trade and st.session_state.active_trade is None:
     st.toast(f"🚀 Orden Abierta: {type_str} en {symbol}")
 
 # ---------------------------------------------------------
-# 6. INTERFAZ GRÁFICA Y RENDIMIENTO
+# 6. INTERFAZ GRÁFICA Y DASHBOARD
 # ---------------------------------------------------------
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Precio Mercado", f"${entry_price:,.2f}")
@@ -460,7 +454,7 @@ st.subheader(f"🎯 Análisis Técnico — {symbol}")
 st.line_chart(df_processed[["Close", "EMA_20", "EMA_50", "EMA_200"]])
 
 # ---------------------------------------------------------
-# 7. CICLO DE AUTO-REFRESCO SEGURO (SIN PANTALLA NEGRA)
+# 7. CICLO DE AUTO-REFRESCO SEGURO
 # ---------------------------------------------------------
 if auto_refresh:
   time.sleep(refresh_seconds)
