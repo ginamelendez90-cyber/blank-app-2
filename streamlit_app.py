@@ -14,7 +14,7 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("🐋 Crypto Predictor & Detector de Ballenas en Tiempo Real")
+st.title("🐋 Crypto Predictor & Detector de Ballenas (Optimizado)")
 
 # ---------------------------------------------------------
 # 1. BARRA LATERAL: PARÁMETROS Y GESTIÓN DE RIESGO
@@ -41,10 +41,10 @@ interval = st.sidebar.selectbox(
 st.sidebar.header("🛡️ Filtros de Ballenas & Riesgo")
 min_whale_usd = st.sidebar.slider(
     "Tamaño Mínimo de Ballena (USD)",
-    min_value=10000,
-    max_value=200000,
-    value=50000,
-    step=10000,
+    min_value=5000,
+    max_value=100000,
+    value=10000,
+    step=5000,
 )
 risk_reward_ratio = st.sidebar.slider(
     "Ratio Riesgo / Beneficio (R:R)",
@@ -102,15 +102,14 @@ def fetch_from_okx(symbol: str, interval: str, limit: int = 150):
   return pd.DataFrame()
 
 
-# Función para extraer transacciones recientes y filtrar órdenes grandes (Ballenas)
 def fetch_whale_trades(symbol: str, min_usd: float):
-  url = f"https://www.okx.com/api/v5/market/trades?instId={symbol}&limit=100"
+  # Aumentamos el límite a 300 para capturar más historial de transacciones en vivo
+  url = f"https://www.okx.com/api/v5/market/trades?instId={symbol}&limit=300"
   try:
     response = requests.get(url, headers=HEADERS, timeout=3)
     if response.status_code == 200:
       trades_data = response.json().get("data", [])
       if trades_data:
-        # Estructura OKX trades: [tradeId, px (precio), sz (tamaño), side (buy/sell), ts]
         df_trades = pd.DataFrame(
             trades_data, columns=["tradeId", "Price", "Size", "Side", "Time"]
         )
@@ -121,7 +120,6 @@ def fetch_whale_trades(symbol: str, min_usd: float):
             df_trades["Time"].astype(int), unit="ms"
         ).dt.strftime("%H:%M:%S")
 
-        # Filtrar solo transacciones que superen el monto de ballena definido
         whales = df_trades[df_trades["Total_USD"] >= min_usd]
         return whales[["Hora", "Side", "Price", "Size", "Total_USD"]]
   except Exception:
@@ -192,7 +190,7 @@ def build_pro_indicators(df_in):
   df["ATR"] = true_range.rolling(14).mean()
 
   df["Vol_SMA"] = df["Volume"].rolling(window=20).mean()
-  df["Volume_Surge"] = df["Volume"] > (df["Vol_SMA"] * 1.7)
+  df["Volume_Surge"] = df["Volume"] > (df["Vol_SMA"] * 1.5)
 
   return df.dropna()
 
@@ -246,13 +244,13 @@ else:
 confidence = min(abs(score) + 35, 96.0)
 
 is_high_expansion_setup = (
-    confidence >= 80
+    confidence >= 78
     and last_row["Volume_Surge"]
     and (atr_val > df_processed["ATR"].mean())
 )
 
 # ---------------------------------------------------------
-# 5. INTERFAZ PRINCIPAL Y PANEL DE BALLENAS
+# 5. INTERFAZ PRINCIPAL Y PANEL DE BALLENAS (CON RESPALDO)
 # ---------------------------------------------------------
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Precio Mercado", f"${entry_price:,.2f}")
@@ -266,7 +264,7 @@ st.line_chart(df_processed["Close"].tail(25), height=120)
 
 st.markdown("---")
 
-# APARTADO DE RASTEO DE BALLENAS (WHALE FLOW)
+# APARTADO DE RASTEO DE BALLENAS
 st.subheader(
     f"🐋 RASTREADOR DE BALLENAS (Órdenes > ${min_whale_usd:,.0f} USD)"
 )
@@ -281,12 +279,11 @@ if not whale_df.empty:
 
   pressure = (
       "🟢 COMPRAS INSTITUCIONALES DOMINANTES"
-      if buy_whales > sell_whales
+      if buy_whales >= sell_whales
       else "🔴 VENTAS INSTITUCIONALES / PRESIÓN BAJISTA"
   )
   col_w3.metric("Flujo Neto Institucional", pressure)
 
-  # Mostrar la tabla de transacciones de ballenas en tiempo real
   st.dataframe(
       whale_df.style.format(
           {
@@ -299,9 +296,30 @@ if not whale_df.empty:
       height=200,
   )
 else:
-  st.info(
-      "Escaneando el libro de órdenes en busca de grandes transacciones"
-      " institucionales en este instante..."
+  # Sistema de respaldo heurístico si el endpoint de trades está saturado o vacío
+  st.warning(
+      "⚠️ Órdenes directas individuales no detectadas en este milisegundo."
+      " Activando Estimación de Flujo Institucional por Volumen de Velas:"
+  )
+
+  est_volume = last_row["Volume"] * entry_price
+  col_w1, col_w2, col_w3 = st.columns(3)
+  col_w1.metric(
+      "Volumen de la Vela Actual",
+      f"${est_volume:,.2f}",
+      delta="Expan. Institucional"
+      if last_row["Volume_Surge"]
+      else "Normal",
+  )
+  col_w2.metric(
+      "Intensidad de Compra/Venta",
+      "🟢 Fuerte Acumulación" if is_up else "🔴 Fuerte Distribución",
+  )
+  col_w3.metric(
+      "Estado de Ballenas",
+      "Activas en el rango"
+      if last_row["Volume_Surge"]
+      else "En espera de ruptura",
   )
 
 st.markdown("---")
@@ -311,13 +329,13 @@ if is_high_expansion_setup:
       f"🚀 **¡ALERTA PRO: OPORTUNIDAD X5/X10 EN TEMPORALIDAD DE {interval}!**"
   )
   st.markdown(
-      "Se detectó un **impulso de volumen institucional** y actividad de"
+      "Se detectó un **impulso de volumen institucional** y acumulación de"
       f" ballenas en **{symbol}** para la temporalidad de **{interval}**."
   )
 else:
   st.info(
       f"⏳ **Estado de Mercado ({interval}):** Analizando flujos de volumen y"
-      " acumulación de ballenas..."
+      " acumulación..."
   )
 
 st.markdown("---")
