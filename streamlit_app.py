@@ -109,26 +109,26 @@ def fetch_live_order_flow(symbol: str, min_usd: float):
     if response.status_code == 200:
       trades_data = response.json().get("data", [])
       if trades_data:
-        df_trades = pd.DataFrame(
-            trades_data, columns=["tradeId", "Price", "Size", "Side", "Time"]
-        )
-        df_trades["Price"] = df_trades["Price"].astype(float)
-        df_trades["Size"] = df_trades["Size"].astype(float)
-        df_trades["Total_USD"] = df_trades["Price"] * df_trades["Size"]
-        df_trades["Hora"] = pd.to_datetime(
-            df_trades["Time"].astype(int), unit="ms"
-        ).dt.strftime("%H:%M:%S")
+        # OKX v5 devuelve diccionarios con claves: px (precio), sz (tamaño), side (buy/sell), ts (tiempo)
+        df_trades = pd.DataFrame(trades_data)
+        if "px" in df_trades.columns and "sz" in df_trades.columns:
+          df_trades["Price"] = df_trades["px"].astype(float)
+          df_trades["Size"] = df_trades["sz"].astype(float)
+          df_trades["Side"] = df_trades["side"]
+          df_trades["Total_USD"] = df_trades["Price"] * df_trades["Size"]
+          df_trades["Hora"] = pd.to_datetime(
+              df_trades["ts"].astype(int), unit="ms"
+          ).dt.strftime("%H:%M:%S")
 
-        # Separar volumen general y volumen de ballenas
-        total_buy_vol = df_trades[df_trades["Side"] == "buy"][
-            "Total_USD"
-        ].sum()
-        total_sell_vol = df_trades[df_trades["Side"] == "sell"][
-            "Total_USD"
-        ].sum()
+          total_buy_vol = df_trades[df_trades["Side"] == "buy"][
+              "Total_USD"
+          ].sum()
+          total_sell_vol = df_trades[df_trades["Side"] == "sell"][
+              "Total_USD"
+          ].sum()
 
-        whales = df_trades[df_trades["Total_USD"] >= min_usd]
-        return df_trades, whales, total_buy_vol, total_sell_vol
+          whales = df_trades[df_trades["Total_USD"] >= min_usd]
+          return df_trades, whales, total_buy_vol, total_sell_vol
   except Exception:
     pass
   return pd.DataFrame(), pd.DataFrame(), 0.0, 0.0
@@ -258,7 +258,6 @@ is_high_expansion_setup = (
     and (atr_val > df_processed["ATR"].mean())
 )
 
-# Cálculo de Porcentaje de Compras vs Ventas en la Vela Actual
 total_vol = live_buy_vol + live_sell_vol
 if total_vol > 0:
   buy_pct = (live_buy_vol / total_vol) * 100
@@ -282,7 +281,7 @@ st.line_chart(df_processed["Close"].tail(25), height=120)
 
 st.markdown("---")
 
-# APARTADO EXCLUSIVO: COMPRAS VS VENTAS DE LA VELA ACTUAL
+# APARTADO DE PRESIÓN INTERNA DE COMPRA Y VENTA EN VIVO
 st.subheader("⚖️ Presión Interna de Compra y Venta (Vela Actual en Vivo)")
 
 col_p1, col_p2 = st.columns(2)
@@ -299,7 +298,6 @@ with col_p2:
       f"{sell_pct:.1f}% del Mercado",
   )
 
-# Barra de progreso visual para el dominio de compras vs ventas
 st.progress(
     int(buy_pct),
     text=(
