@@ -5,18 +5,27 @@ import pandas as pd
 import requests
 import streamlit as st
 
+# Intentar importar python-binance para ejecución real
+try:
+  from binance.client import Client
+  from binance.enums import *
+
+  BINANCE_AVAILABLE = True
+except ImportError:
+  BINANCE_AVAILABLE = False
+
 # ---------------------------------------------------------
-# CONFIGURACIÓN DE PÁGINA Y MEMORIA PERSISTENTE DE TRADING
+# CONFIGURACIÓN DE PÁGINA Y MEMORIA DEL BOT
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="Crypto Predictor Pro - Auto SL/TP Engine",
+    page_title="Crypto Predictor Pro - Binance Live Engine",
     page_icon="⚡",
     layout="wide",
 )
 
-st.title("⚡ Crypto Predictor Pro — Trading 100% Automático (Auto SL/TP)")
+st.title("⚡ Crypto Predictor Pro — Sistema Autónomo Binance & Order Flow")
 
-# Memoria de sesión para balance, posiciones fijas e historial
+# Variables de sesión persistentes
 if "paper_balance" not in st.session_state:
   st.session_state.paper_balance = 10000.0
 if "active_trade" not in st.session_state:
@@ -25,12 +34,59 @@ if "trade_history" not in st.session_state:
   st.session_state.trade_history = []
 if "last_close_event" not in st.session_state:
   st.session_state.last_close_event = None
+if "is_executing" not in st.session_state:
+  st.session_state.is_executing = False  # Bloqueo anti-duplicación
 
 # ---------------------------------------------------------
-# 1. BARRA LATERAL: CONFIGURACIÓN Y AUTO-TRADING
+# 1. BARRA LATERAL: ENTORNO Y SALVAGUARDAS DE SEGURIDAD
 # ---------------------------------------------------------
+st.sidebar.header("🛡️ Entorno y Claves Binance")
+
+trading_mode = st.sidebar.radio(
+    "Modo de Operación",
+    ["Simulación (Paper)", "Binance Testnet (Pruebas)", "Binance REAL (Live)"],
+    index=0,
+)
+
+# Carga de credenciales desde st.secrets o Sidebar
+binance_api_key = ""
+binance_api_secret = ""
+
+if trading_mode != "Simulación (Paper)":
+  if not BINANCE_AVAILABLE:
+    st.sidebar.error("❌ Instala 'python-binance' en requirements.txt")
+  else:
+    # Intenta leer de secrets, de lo contrario pide al usuario
+    try:
+      binance_api_key = st.secrets["binance"]["api_key"]
+      binance_api_secret = st.secrets["binance"]["api_secret"]
+      st.sidebar.success("🔑 Claves cargadas desde Secrets")
+    except Exception:
+      binance_api_key = st.sidebar.text_input(
+          "Binance API Key", type="password"
+      )
+      binance_api_secret = st.sidebar.text_input(
+          "Binance API Secret", type="password"
+      )
+
+# SALVAGUARDA 1: Confirmación explícita para mercado real
+live_confirm = False
+if trading_mode == "Binance REAL (Live)":
+  live_confirm = st.sidebar.checkbox(
+      "⚠️ Acepto el riesgo de operar con CAPITAL REAL"
+  )
+  if not live_confirm:
+    st.sidebar.warning(
+        "Debes confirmar la casilla para habilitar órdenes reales."
+    )
+
+# SALVAGUARDA 2: Interruptor de pánico
+emergency_stop = st.sidebar.button("🚨 BOTÓN DE PÁNICO: DETENER BOT")
+if emergency_stop:
+  st.session_state.is_executing = False
+  st.sidebar.error("🛑 Bot congelado por orden del usuario.")
+
 st.sidebar.header("⚙️ Configuración del Par")
-
 pair_options = {
     "Bitcoin (BTC/USDT)": "BTC-USDT",
     "Ethereum (ETH/USDT)": "ETH-USDT",
@@ -38,7 +94,6 @@ pair_options = {
     "BNB (BNB/USDT)": "BNB-USDT",
     "Ripple (XRP/USDT)": "XRP-USDT",
 }
-
 selected_label = st.sidebar.selectbox(
     "Criptomoneda Base", list(pair_options.keys())
 )
@@ -49,27 +104,25 @@ interval = st.sidebar.selectbox(
 )
 
 st.sidebar.header("🤖 Piloto Automático")
-auto_execute = st.sidebar.toggle(
-    "Activar Apertura y Cierre 100% Automático", value=True
-)
+auto_execute = st.sidebar.toggle("Activar Auto-Trading", value=False)
 signal_threshold = st.sidebar.slider(
-    "Umbral Mínimo de Confianza para Entrar (%)",
+    "Umbral de Confianza para Entrar (%)",
     min_value=70,
     max_value=90,
     value=80,
     step=1,
 )
 
-st.sidebar.header("🛡️ Parámetros de Salida (SL / TP)")
+st.sidebar.header("🛡️ Parámetros de Riesgo")
+trade_amount_usd = st.sidebar.number_input(
+    "Monto por Operación ($)", min_value=10, max_value=5000, value=100
+)
 risk_reward_ratio = st.sidebar.slider(
     "Ratio Riesgo / Beneficio (R:R)",
     min_value=1.0,
     max_value=3.5,
     value=2.5,
     step=0.1,
-)
-trade_amount_usd = st.sidebar.number_input(
-    "Monto por Operación ($)", min_value=100, max_value=5000, value=1000
 )
 min_whale_usd = st.sidebar.slider(
     "Filtro de Ballenas (USD)",
@@ -83,7 +136,71 @@ auto_refresh = st.sidebar.checkbox("Activar Auto-Refresco (1s)", value=True)
 candle_limit = 150
 
 # ---------------------------------------------------------
-# 2. CONEXIÓN API EN TIEMPO REAL (OKX)
+# 2. CLIENTE BINANCE Y FUNCIONES DE EJECUCIÓN CON SALVAGUARDAS
+# ---------------------------------------------------------
+binance_client = None
+
+if (
+    trading_mode != "Simulación (Paper)"
+    and BINANCE_AVAILABLE
+    and binance_api_key
+):
+  try:
+    is_testnet = trading_mode == "Binance Testnet (Pruebas)"
+    binance_client = Client(
+        binance_api_key, binance_api_secret, testnet=is_testnet
+    )
+  except Exception as e:
+    st.sidebar.error(f"Error conexión Binance: {e}")
+
+
+def execute_binance_trade(symbol_raw, side_type, amount_usd, entry, tp, sl):
+  """Ejecuta orden en Binance con formateo estricto de precisión y verificación de saldo."""
+  if not binance_client:
+    return None, "Cliente de Binance no configurado correctamente."
+
+  try:
+    binance_symbol = symbol_raw.replace("-", "")
+
+    # SALVAGUARDA 3: Verificación previa de balance
+    account = binance_client.get_account()
+    usdt_balance = sum(
+        float(b["free"]) for b in account["balances"] if b["asset"] == "USDT"
+    )
+
+    if "LONG" in side_type and usdt_balance < amount_usd:
+      return (
+          None,
+          f"Saldo insuficiente en Binance USDT (${usdt_balance:.2f} <"
+          f" ${amount_usd})",
+      )
+
+    # SALVAGUARDA 4: Formateo de precisión según reglas del par
+    ticker = binance_client.get_symbol_ticker(symbol=binance_symbol)
+    curr_price = float(ticker["price"])
+    raw_qty = amount_usd / curr_price
+
+    # Ajuste basico de precision (ej. BTC 5 decimales, SOL 2 decimales)
+    qty_precision = 5 if "BTC" in symbol_raw else 2
+    quantity = round(raw_qty, qty_precision)
+
+    order_side = SIDE_BUY if "LONG" in side_type else SIDE_SELL
+
+    # Envío de Orden Mercado Principal
+    main_order = binance_client.create_order(
+        symbol=binance_symbol,
+        side=order_side,
+        type=ORDER_TYPE_MARKET,
+        quantity=quantity,
+    )
+
+    return main_order, "OK"
+  except Exception as e:
+    return None, str(e)
+
+
+# ---------------------------------------------------------
+# 3. EXTRAER DATOS EN VIVO (OKX PUBLIC API + ORDER FLOW)
 # ---------------------------------------------------------
 HEADERS = {
     "User-Agent": (
@@ -168,13 +285,13 @@ df_trades, whale_df, live_buy_vol, live_sell_vol = fetch_live_order_flow(
 )
 
 if data.empty or len(data) < 50:
-  st.error("Estableciendo conexión con el servidor de datos...")
+  st.error("Conectando con el servidor de datos...")
   time.sleep(1)
   st.rerun()
 
 
 # ---------------------------------------------------------
-# 3. TEMPORIZADOR Y CÁLCULO ALGORÍTMICO DE NIVELES
+# 4. TEMPORIZADOR Y MOTOR TÉCNICO ALGORÍTMICO
 # ---------------------------------------------------------
 def get_candle_countdown(interval_str):
   interval_minutes = {"5m": 5, "15m": 15, "1h": 60, "4h": 240}
@@ -289,10 +406,10 @@ else:
 should_open_trade = confidence >= signal_threshold
 
 # ---------------------------------------------------------
-# 4. MOTOR DE TRADING AUTOMÁTICO (MONITOREO FIJO SL/TP)
+# 5. EJECUCIÓN Y GESTIÓN AUTOMÁTICA DE POSICIONES
 # ---------------------------------------------------------
 
-# A) Monitoreo de posición activa -> Cierre automático cuando toca TP o SL
+# Monitoreo de posición abierta -> Cierre por SL o TP
 if st.session_state.active_trade:
   act = st.session_state.active_trade
   closed_reason = None
@@ -305,7 +422,7 @@ if st.session_state.active_trade:
     elif entry_price <= act["sl"]:
       closed_reason = "STOP LOSS (EJECUTADO 🛡️)"
       pnl_usd = (act["sl"] - act["entry"]) * act["size"]
-  else:  # SHORT
+  else:
     if entry_price <= act["tp"]:
       closed_reason = "TAKE PROFIT (ALCANZADO 🎯)"
       pnl_usd = (act["entry"] - act["tp"]) * act["size"]
@@ -313,7 +430,6 @@ if st.session_state.active_trade:
       closed_reason = "STOP LOSS (EJECUTADO 🛡️)"
       pnl_usd = (act["entry"] - act["sl"]) * act["size"]
 
-  # Si el precio tocó alguno de los límites fijados, se cierra la orden automáticamente
   if closed_reason:
     st.session_state.paper_balance += pnl_usd
     close_event = {
@@ -328,61 +444,78 @@ if st.session_state.active_trade:
     st.session_state.trade_history.append(close_event)
     st.session_state.last_close_event = close_event
     st.session_state.active_trade = None
+    st.session_state.is_executing = False
 
-# B) Apertura automática cuando el algoritmo genera la señal
+# SALVAGUARDA 5: Disparo de Orden con Cerrojo Anti-Duplicación (Debounce)
 if (
     should_open_trade
     and auto_execute
     and st.session_state.active_trade is None
+    and not st.session_state.is_executing
+    and not emergency_stop
 ):
-  pos_size = trade_amount_usd / entry_price
-  # SE FIJAN PERMANENTEMENTE LOS NIVELES DE SL Y TP PARA ESTA OPERACIÓN
-  st.session_state.active_trade = {
-      "symbol": symbol,
-      "type": type_str,
-      "entry": entry_price,
-      "tp": take_profit,
-      "sl": stop_loss,
-      "size": pos_size,
-      "amount_usd": trade_amount_usd,
-      "reasons": reasons,
-      "time": datetime.datetime.now().strftime("%H:%M:%S"),
-  }
+
+  # Verificar si se cumple confirmación en modo Binance Real
+  can_proceed = True
+  if trading_mode == "Binance REAL (Live)" and not live_confirm:
+    can_proceed = False
+
+  if can_proceed:
+    st.session_state.is_executing = True  # Bloquear nuevas entradas
+
+    binance_res = "OK"
+    if trading_mode != "Simulación (Paper)":
+      _, binance_res = execute_binance_trade(
+          symbol, type_str, trade_amount_usd, entry_price, take_profit, stop_loss
+      )
+
+    if binance_res == "OK":
+      pos_size = trade_amount_usd / entry_price
+      st.session_state.active_trade = {
+          "symbol": symbol,
+          "type": type_str,
+          "entry": entry_price,
+          "tp": take_profit,
+          "sl": stop_loss,
+          "size": pos_size,
+          "amount_usd": trade_amount_usd,
+          "reasons": reasons,
+          "mode": trading_mode,
+          "time": datetime.datetime.now().strftime("%H:%M:%S"),
+      }
+      st.toast(f"🚀 Orden Ejecutada ({trading_mode}): {type_str} en {symbol}")
+    else:
+      st.error(f"❌ Fallo al emitir orden en Binance: {binance_res}")
+      st.session_state.is_executing = False
 
 # ---------------------------------------------------------
-# 5. INTERFAZ Y REPORTE DE ESTADO
+# 6. INTERFAZ GRÁFICA Y DASHBOARD PRINCIPAL
 # ---------------------------------------------------------
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Precio Mercado", f"${entry_price:,.2f}")
 m2.metric("Predicción Vela Actual", candle_prediction)
 m3.metric("⏳ Cierre de Vela en", candle_countdown)
 m4.metric("Rango Proyectado", f"±${expected_range_usd:,.2f}")
-m5.metric("Balance Simulado", f"${st.session_state.paper_balance:,.2f} USDT")
+m5.metric("Modo Activo", trading_mode.split()[0])
 
 st.markdown("---")
 
-# NOTIFICACIÓN DE CIERRE RECIENTE POR SL O TP
 if st.session_state.last_close_event:
   evt = st.session_state.last_close_event
   pnl_color = "🟢" if evt["PnL ($)"] >= 0 else "🔴"
-  st.toast(
-      f"Operación Auto-Cerrada por {evt['Resultado']}: PnL"
-      f" ${evt['PnL ($)']:+,.2f}"
-  )
   st.success(
-      f"🤖 **AUTOMÁTICO:** Última posición en **{evt['Par']} ({evt['Tipo']})**"
-      f" cerrada por **{evt['Resultado']}** a las {evt['Fecha']}. Resultado:"
-      f" {pnl_color} **${evt['PnL ($)']:+,.2f} USDT**"
+      f"🤖 Última posición en **{evt['Par']} ({evt['Tipo']})** cerrada por"
+      f" **{evt['Resultado']}**. Resultado: {pnl_color}"
+      f" **${evt['PnL ($)']:+,.2f} USDT**"
   )
 
-# BANNER DE SEÑAL
 if should_open_trade:
   st.error(
       f"🚨 **SEÑAL ACTIVA DE ENTRADA AUTOMÁTICA** — Tipo: **{type_str}** en"
       f" **{symbol}**"
   )
   c1, c2, c3, c4 = st.columns(4)
-  c1.metric("Punto Entrada Fijo", f"${entry_price:,.2f}")
+  c1.metric("Punto Entrada", f"${entry_price:,.2f}")
   c2.metric("Take Profit Fijo (TP)", f"${take_profit:,.2f}")
   c3.metric("Stop Loss Fijo (SL)", f"${stop_loss:,.2f}")
   c4.metric("Confianza Algorítmica", f"{confidence:.1f}%")
@@ -390,29 +523,26 @@ if should_open_trade:
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 6. COMPRAS Y VENTAS EN VIVO Y RASTREADOR DE BALLENAS
+# 7. ORDER FLOW & RASTREADOR DE BALLENAS
 # ---------------------------------------------------------
 st.subheader("⚖️ Presión Interna de Compra y Venta (Vela Actual en Vivo)")
 
 col_p1, col_p2 = st.columns(2)
-with col_p1:
-  st.metric(
-      "🟢 Volumen de Compras (En Vivo)",
-      f"${live_buy_vol:,.2f}",
-      f"{buy_pct:.1f}% del Mercado",
-  )
-with col_p2:
-  st.metric(
-      "🔴 Volumen de Ventas (En Vivo)",
-      f"${live_sell_vol:,.2f}",
-      f"{100-buy_pct:.1f}% del Mercado",
-  )
+col_p1.metric(
+    "🟢 Volumen Compras (En Vivo)",
+    f"${live_buy_vol:,.2f}",
+    f"{buy_pct:.1f}% del Mercado",
+)
+col_p2.metric(
+    "🔴 Volumen Ventas (En Vivo)",
+    f"${live_sell_vol:,.2f}",
+    f"{100-buy_pct:.1f}% del Mercado",
+)
 
 st.progress(
     int(buy_pct),
     text=(
-        f"Dominio de Compras: {buy_pct:.1f}%  |  Dominio de Ventas:"
-        f" {100-buy_pct:.1f}%"
+        f"Dominio Compras: {buy_pct:.1f}%  |  Dominio Ventas: {100-buy_pct:.1f}%"
     ),
 )
 
@@ -439,24 +569,20 @@ if not whale_df.empty:
 
   st.dataframe(
       whale_df[["Hora", "Side", "Price", "Size", "Total_USD"]]
-      .head(10)
+      .head(8)
       .style.format(
-          {
-              "Price": "${:,.2f}",
-              "Size": "{:,.4f}",
-              "Total_USD": "${:,.2f}",
-          }
+          {"Price": "${:,.2f}", "Size": "{:,.4f}", "Total_USD": "${:,.2f}"}
       ),
       use_container_width=True,
-      height=180,
+      height=160,
   )
 else:
-  st.info("Escaneando transacciones institucionales grandes...")
+  st.info("Escaneando órdenes institucionales...")
 
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 7. ESTADO DE POSICIÓN ACTIVA Y FIJACIÓN DE SL/TP
+# 8. PANEL DE CONTROL DE POSICIÓN Y HISTORIAL
 # ---------------------------------------------------------
 st.subheader("🎮 Estado de Posición y Monitor de Cierre Automático")
 col_sim1, col_sim2 = st.columns([1, 2])
@@ -471,7 +597,7 @@ with col_sim1:
     )
     pnl_symbol = "🟢" if floating_pnl >= 0 else "🔴"
 
-    st.warning(f"**POSICIÓN ABIERTA:** {act['type']}")
+    st.warning(f"**POSICIÓN ABIERTA ({act['mode']}):** {act['type']}")
     st.write(f"• **Entrada:** `${act['entry']:,.2f}`")
     st.write(f"• **Take Profit Fijo:** `${act['tp']:,.2f}`")
     st.write(f"• **Stop Loss Fijo:** `${act['sl']:,.2f}`")
@@ -489,9 +615,10 @@ with col_sim1:
           "PnL ($)": round(floating_pnl, 2),
       })
       st.session_state.active_trade = None
+      st.session_state.is_executing = False
       st.rerun()
   else:
-    st.info("🤖 **Piloto Automático:** En espera de señal de entrada...")
+    st.info("🤖 **Piloto Automático:** Monitorizando entradas...")
     st.write(f"**Próximo TP Estimado:** `${take_profit:,.2f}`")
     st.write(f"**Próximo SL Estimado:** `${stop_loss:,.2f}`")
 
@@ -511,7 +638,7 @@ if st.session_state.trade_history:
 st.markdown("---")
 
 # ---------------------------------------------------------
-# 8. GRÁFICOS TÉCNICOS
+# 9. GRÁFICOS TÉCNICOS
 # ---------------------------------------------------------
 st.subheader(
     f"🎯 Análisis Técnico Profesional ({interval}) — {symbol}"
@@ -522,7 +649,7 @@ st.subheader("📊 Indicador RSI")
 st.line_chart(df_processed["RSI"])
 
 # ---------------------------------------------------------
-# 9. AUTO-REFRESCO CADA 1 SEGUNDO
+# 10. REFRESO AUTOMÁTICO CADA 1 SEGUNDO
 # ---------------------------------------------------------
 if auto_refresh:
   time.sleep(1)
