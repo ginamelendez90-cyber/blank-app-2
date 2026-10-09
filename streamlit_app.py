@@ -1,14 +1,12 @@
 import numpy as np
 import pandas as pd
 import requests
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score
 import streamlit as st
 
 st.set_page_config(
     page_title="Crypto Predictor Bot", page_icon="🤖", layout="wide"
 )
-st.title("🤖 Predictor Automático Cripto (Vía Binance API)")
+st.title("🤖 Predictor Automático Cripto (Algoritmo Cuantitativo)")
 
 # 1. PARÁMETROS EN LA BARRA LATERAL
 st.sidebar.header("⚙️ Configuración del Par")
@@ -27,14 +25,11 @@ symbol = pair_options[selected_label]
 interval = st.sidebar.selectbox(
     "Temporalidad de Velas", ["5m", "15m", "1h", "4h", "1d"], index=1
 )
-candle_limit = st.sidebar.slider(
-    "Velas Históricas", min_value=200, max_value=1000, value=500, step=100
-)
 
 
 # 2. EXTRACCIÓN DE DATOS
 @st.cache_data(ttl=120, show_spinner=False)
-def get_binance_klines(symbol: str, interval: str, limit: int = 500):
+def get_binance_klines(symbol: str, interval: str, limit: int = 300):
   url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
   try:
     response = requests.get(url, timeout=10)
@@ -65,68 +60,51 @@ def get_binance_klines(symbol: str, interval: str, limit: int = 500):
 
 
 with st.spinner("Cargando datos desde Binance..."):
-  data = get_binance_klines(symbol, interval, candle_limit)
+  data = get_binance_klines(symbol, interval)
 
-if data.empty or len(data) < 60:
-  st.warning("Sin datos suficientes de la API.")
+if data.empty:
+  st.warning("No se pudieron obtener los datos de la API.")
   st.stop()
 
+# 3. INDICADORES Y PREDICCIÓN ALGORÍTMICA (SIN SKLEARN)
+df = data.copy()
+df["SMA_10"] = df["Close"].rolling(window=10).mean()
+df["SMA_30"] = df["Close"].rolling(window=30).mean()
 
-# 3. INDICADORES
-def build_features(df_in):
-  df = df_in.copy()
-  df["Returns"] = df["Close"].pct_change()
-  df["Volatility"] = df["Returns"].rolling(window=10).std()
-  df["SMA_10"] = df["Close"].rolling(window=10).mean()
-  df["SMA_30"] = df["Close"].rolling(window=30).mean()
-  df["SMA_Ratio"] = df["SMA_10"] / df["SMA_30"]
+delta = df["Close"].diff()
+gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+rs = gain / (loss + 1e-9)
+df["RSI"] = 100 - (100 / (1 + rs))
 
-  delta = df["Close"].diff()
-  gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-  loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-  rs = gain / (loss + 1e-9)
-  df["RSI"] = 100 - (100 / (1 + rs))
-  df["Target"] = (df["Close"].shift(-1) > df["Close"]).astype(int)
-  return df.dropna()
+# Cálculo de Puntuación Cuantitativa (-100 a +100)
+last_row = df.iloc[-1]
+score = 0
 
+# Regla 1: Tendencia por Medias Móviles
+if last_row["SMA_10"] > last_row["SMA_30"]:
+  score += 50
+else:
+  score -= 50
 
-df_processed = build_features(data)
+# Regla 2: Momentum por RSI
+if last_row["RSI"] < 30:
+  score += 40  # Sobrevendido (Probable rebote al alza)
+elif last_row["RSI"] > 70:
+  score -= 40  # Sobrecomprado (Probable corrección a la baja)
 
-# 4. ENTRENAMIENTO
-feature_cols = ["Returns", "Volatility", "SMA_Ratio", "RSI"]
-X = df_processed[feature_cols]
-y = df_processed["Target"]
+# Predicción final
+prediction = 1 if score >= 0 else 0
+confidence = min(abs(score) + 50, 95)
 
-train_size = int(len(X) * 0.8)
-X_train, X_test = X.iloc[:train_size], X.iloc[train_size:-1]
-y_train, y_test = y.iloc[:train_size], y.iloc[train_size:-1]
-
-model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
-model.fit(X_train, y_train)
-
-acc = accuracy_score(y_test, model.predict(X_test)) if len(y_test) > 0 else 0.0
-latest_features = X.iloc[[-1]]
-prediction = model.predict(latest_features)[0]
-probabilities = model.predict_proba(latest_features)[0]
-
-# 5. INTERFAZ
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("Precio Actual", f"${data['Close'].iloc[-1]:,.2f}")
+# 4. INTERFAZ GRÁFICA
+col1, col2, col3 = st.columns(3)
+col1.metric("Precio Actual", f"${last_row['Close']:,.2f}")
 col2.metric(
     "Predicción Próxima Vela", "🟢 SUBIDA" if prediction == 1 else "🔴 BAJADA"
 )
-col3.metric("Confianza Subida", f"{probabilities[1]*100:.1f}%")
-col4.metric("Precisión (Test)", f"{acc * 100:.1f}%")
+col3.metric("Confianza del Algoritmo", f"{confidence:.1f}%")
 
 st.markdown("---")
-
-# Gráfico nativo de Streamlit (sin Plotly)
 st.subheader(f"Evolución de Precio — {symbol}")
-st.line_chart(data["Close"])
-
-st.subheader("📊 Peso de cada Indicador")
-importance_df = pd.DataFrame({
-    "Indicador": feature_cols,
-    "Importancia": model.feature_importances_,
-}).sort_values("Importancia", ascending=False)
-st.bar_chart(importance_df.set_index("Indicador"))
+st.line_chart(df[["Close", "SMA_10", "SMA_30"]])
