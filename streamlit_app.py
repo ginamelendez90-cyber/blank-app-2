@@ -152,7 +152,6 @@ def build_pro_indicators(df_in):
   true_range = np.max(ranges, axis=1)
   df["ATR"] = true_range.rolling(14).mean()
 
-  # Volumen Promedio y Filtro de Explosión de Volumen
   df["Vol_SMA"] = df["Volume"].rolling(window=20).mean()
   df["Volume_Surge"] = df["Volume"] > (df["Vol_SMA"] * 1.8)
 
@@ -207,8 +206,6 @@ else:
 
 confidence = min(abs(score) + 35, 96.0)
 
-# --- DETECTOR DE OPORTUNIDAD X5 / X10 DE ALTO IMPULSO ---
-# Se activa si la confianza es alta (>80%), hay volumen masivo y alta volatilidad
 is_high_expansion_setup = (
     confidence >= 82
     and last_row["Volume_Surge"]
@@ -216,7 +213,7 @@ is_high_expansion_setup = (
 )
 
 # ---------------------------------------------------------
-# 5. INTERFAZ PRINCIPAL Y ALERTAS DE ALTO IMPULSO
+# 5. INTERFAZ PRINCIPAL CON MINIGRÁFICO
 # ---------------------------------------------------------
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Precio Mercado", f"${entry_price:,.2f}")
@@ -225,9 +222,12 @@ m3.metric("⏳ Cierre de Vela en", candle_countdown)
 m4.metric("Rango Proyectado", f"±${expected_range_usd:,.2f}")
 m5.metric("Movimiento Est.", f"{expected_range_pct:.2f}%")
 
+# Apartado del Minigráfico de rendimiento reciente (últimas 25 velas)
+st.markdown("##### 📈 Comportamiento Reciente (Mini Tendencia)")
+st.line_chart(df_processed["Close"].tail(25), height=120)
+
 st.markdown("---")
 
-# Alerta Visual Dinámica para Oportunidades X5 / X10
 if is_high_expansion_setup:
   st.error(
       "🚀 **¡ALERTA PRO: OPORTUNIDAD DE ALTO IMPULSO DETECTADA (SETUP X5/X10"
