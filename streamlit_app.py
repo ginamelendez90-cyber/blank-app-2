@@ -9,12 +9,12 @@ import streamlit as st
 # CONFIGURACIÓN DE PÁGINA
 # ---------------------------------------------------------
 st.set_page_config(
-    page_title="Crypto Predictor Pro Engine",
-    page_icon="⚡",
+    page_title="Crypto Predictor Pro Engine - Whale Tracker",
+    page_icon="🐋",
     layout="wide",
 )
 
-st.title("⚡ Crypto Predictor & Alerta Pro (5m a 4h Setup X5/X10)")
+st.title("🐋 Crypto Predictor & Detector de Ballenas en Tiempo Real")
 
 # ---------------------------------------------------------
 # 1. BARRA LATERAL: PARÁMETROS Y GESTIÓN DE RIESGO
@@ -34,12 +34,18 @@ selected_label = st.sidebar.selectbox(
 )
 symbol = pair_options[selected_label]
 
-# Restringido estrictamente de 5m a 4h según tu preferencia
 interval = st.sidebar.selectbox(
     "Temporalidad de Velas", ["5m", "15m", "1h", "4h"], index=1
 )
 
-st.sidebar.header("🛡️ Gestión de Riesgo (ATR)")
+st.sidebar.header("🛡️ Filtros de Ballenas & Riesgo")
+min_whale_usd = st.sidebar.slider(
+    "Tamaño Mínimo de Ballena (USD)",
+    min_value=10000,
+    max_value=200000,
+    value=50000,
+    step=10000,
+)
 risk_reward_ratio = st.sidebar.slider(
     "Ratio Riesgo / Beneficio (R:R)",
     min_value=1.0,
@@ -52,7 +58,7 @@ auto_refresh = st.sidebar.checkbox("Activar Auto-Refresco (1s)", value=True)
 candle_limit = 150
 
 # ---------------------------------------------------------
-# 2. CONEXIÓN API Y EXTRACCIÓN DE DATOS
+# 2. CONEXIÓN API Y EXTRACCIÓN DE DATOS DE MERCADO
 # ---------------------------------------------------------
 HEADERS = {
     "User-Agent": (
@@ -96,12 +102,40 @@ def fetch_from_okx(symbol: str, interval: str, limit: int = 150):
   return pd.DataFrame()
 
 
+# Función para extraer transacciones recientes y filtrar órdenes grandes (Ballenas)
+def fetch_whale_trades(symbol: str, min_usd: float):
+  url = f"https://www.okx.com/api/v5/market/trades?instId={symbol}&limit=100"
+  try:
+    response = requests.get(url, headers=HEADERS, timeout=3)
+    if response.status_code == 200:
+      trades_data = response.json().get("data", [])
+      if trades_data:
+        # Estructura OKX trades: [tradeId, px (precio), sz (tamaño), side (buy/sell), ts]
+        df_trades = pd.DataFrame(
+            trades_data, columns=["tradeId", "Price", "Size", "Side", "Time"]
+        )
+        df_trades["Price"] = df_trades["Price"].astype(float)
+        df_trades["Size"] = df_trades["Size"].astype(float)
+        df_trades["Total_USD"] = df_trades["Price"] * df_trades["Size"]
+        df_trades["Hora"] = pd.to_datetime(
+            df_trades["Time"].astype(int), unit="ms"
+        ).dt.strftime("%H:%M:%S")
+
+        # Filtrar solo transacciones que superen el monto de ballena definido
+        whales = df_trades[df_trades["Total_USD"] >= min_usd]
+        return whales[["Hora", "Side", "Price", "Size", "Total_USD"]]
+  except Exception:
+    pass
+  return pd.DataFrame()
+
+
 @st.cache_data(ttl=1, show_spinner=False)
 def get_crypto_candles(symbol: str, interval: str):
   return fetch_from_okx(symbol, interval, candle_limit)
 
 
 data = get_crypto_candles(symbol, interval)
+whale_df = fetch_whale_trades(symbol, min_whale_usd)
 
 if data.empty or len(data) < 50:
   st.error("Estableciendo conexión con el servidor de datos...")
@@ -110,7 +144,7 @@ if data.empty or len(data) < 50:
 
 
 # ---------------------------------------------------------
-# 3. CÁLCULO DE TIEMPO RESTANTE DE LA VELA ACTUAL (5m a 4h)
+# 3. CÁLCULO DE TIEMPO RESTANTE DE LA VELA ACTUAL
 # ---------------------------------------------------------
 def get_candle_countdown(interval_str):
   interval_minutes = {"5m": 5, "15m": 15, "1h": 60, "4h": 240}
@@ -218,7 +252,7 @@ is_high_expansion_setup = (
 )
 
 # ---------------------------------------------------------
-# 5. INTERFAZ PRINCIPAL CON MINIGRÁFICO
+# 5. INTERFAZ PRINCIPAL Y PANEL DE BALLENAS
 # ---------------------------------------------------------
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Precio Mercado", f"${entry_price:,.2f}")
@@ -232,19 +266,58 @@ st.line_chart(df_processed["Close"].tail(25), height=120)
 
 st.markdown("---")
 
+# APARTADO DE RASTEO DE BALLENAS (WHALE FLOW)
+st.subheader(
+    f"🐋 RASTREADOR DE BALLENAS (Órdenes > ${min_whale_usd:,.0f} USD)"
+)
+
+if not whale_df.empty:
+  buy_whales = whale_df[whale_df["Side"] == "buy"]["Total_USD"].sum()
+  sell_whales = whale_df[whale_df["Side"] == "sell"]["Total_USD"].sum()
+
+  col_w1, col_w2, col_w3 = st.columns(3)
+  col_w1.metric("Volumen Compras Ballenas (Buy)", f"${buy_whales:,.2f}")
+  col_w2.metric("Volumen Ventas Ballenas (Sell)", f"${sell_whales:,.2f}")
+
+  pressure = (
+      "🟢 COMPRAS INSTITUCIONALES DOMINANTES"
+      if buy_whales > sell_whales
+      else "🔴 VENTAS INSTITUCIONALES / PRESIÓN BAJISTA"
+  )
+  col_w3.metric("Flujo Neto Institucional", pressure)
+
+  # Mostrar la tabla de transacciones de ballenas en tiempo real
+  st.dataframe(
+      whale_df.style.format(
+          {
+              "Price": "${:,.2f}",
+              "Size": "{:,.4f}",
+              "Total_USD": "${:,.2f}",
+          }
+      ),
+      use_container_width=True,
+      height=200,
+  )
+else:
+  st.info(
+      "Escaneando el libro de órdenes en busca de grandes transacciones"
+      " institucionales en este instante..."
+  )
+
+st.markdown("---")
+
 if is_high_expansion_setup:
   st.error(
       f"🚀 **¡ALERTA PRO: OPORTUNIDAD X5/X10 EN TEMPORALIDAD DE {interval}!**"
   )
   st.markdown(
-      "Se detectó un **impulso de volumen institucional** y expansión de"
-      f" volatilidad en **{symbol}** para la temporalidad de **{interval}**."
-      " Estructura lista para operar con gestión de riesgo estricta."
+      "Se detectó un **impulso de volumen institucional** y actividad de"
+      f" ballenas en **{symbol}** para la temporalidad de **{interval}**."
   )
 else:
   st.info(
       f"⏳ **Estado de Mercado ({interval}):** Analizando flujos de volumen y"
-      " consolidación de velas..."
+      " acumulación de ballenas..."
   )
 
 st.markdown("---")
