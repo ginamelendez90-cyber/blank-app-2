@@ -1,5 +1,3 @@
 streamlit
-requests
+feedparser
 pandas
-numpy
-python-binance
