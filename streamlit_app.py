@@ -1,149 +1,79 @@
-import feedparser
-import pandas as pd
+import time
+from datetime import datetime
 import streamlit as st
 
-# Configuración de la página
 st.set_page_config(
-    page_title="Detector de Impacto Global",
-    page_icon="🚨",
-    layout="wide"
+    page_title="Sistema de Recuperación Anti-Apuestas",
+    page_icon="🛡️",
+    layout="wide",
 )
 
-# Título y encabezado
-st.title("🚨 Detector de Noticias e Impacto Global")
-st.write(
-    "Monitoreo en tiempo real con filtrado inteligente de noticias criticas y de alto impacto a nivel mundial."
+# Menú lateral de navegación
+st.sidebar.title("🛡️ Tu Escudo Personal")
+opcion = st.sidebar.selectbox(
+    "Selecciona una sección",
+    [
+        "Dashboard Principal",
+        "🚨 Botón de Pánico",
+        "📊 Diario de Detonantes",
+        "💰 Control Financiero",
+    ],
 )
 
-# 1. Fuentes de Noticias RSS Internacionales
-RSS_FEEDS = {
-    "BBC Mundo": "https://feeds.bbci.co.uk/spanish/rss.xml",
-    "CNN en Español": "https://cnnespanol.cnn.com/feed/",
-    "El País - Internacional": "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/internacional/index.xml",
-    "DW (Español)": "https://rss.dw.com/xml/rss_es_noticias",
-}
+if opcion == "Dashboard Principal":
+  st.title("Panel de Control de Recuperación")
 
-# 2. Diccionario de Palabras Clave de Alto Impacto
-HIGH_IMPACT_KEYWORDS = [
-    "urgente", "alerta", "última hora", "crisis", "guerra", "conflicto", 
-    "elecciones", "presidente", "banco central", "inflación", "terremoto", 
-    "sismo", "emergencia", "acuerdo", "sanciones", "cumbre", "tragedia", "petróleo"
-]
+  # Simulación de fecha de última recaída (idealmente guardada en Base de Datos o Session State)
+  fecha_inicio = datetime(2026, 9, 1, 0, 0, 0)
+  tiempo_transcurrido = datetime.now() - fecha_inicio
 
-def calcular_nivel_impacto(texto):
-    """
-    Función que analiza el texto y calcula un nivel de impacto 
-    basado en la presencia de palabras clave críticas.
-    """
-    texto_lower = texto.lower()
-    coincidencias = [kw for kw in HIGH_IMPACT_KEYWORDS if kw in texto_lower]
-    
-    # Retorna el conteo y la lista de palabras clave encontradas
-    return len(coincidencias), coincidencias
+  dias = tiempo_transcurrido.days
+  horas = int(tiempo_transcurrido.seconds / 3600)
 
+  col1, col2, col3 = st.columns(3)
+  col1.metric("Días sin apostar", f"{dias} días")
+  col2.metric("Horas adicionales", f"{horas} hrs")
+  col3.metric("Dinero Ahorrado Estimado", f"${dias * 20:,.2f}")  # Ejemplo base
 
-@st.cache_data(ttl=300) # Actualiza los feeds cada 5 minutos
-def cargar_y_analizar_noticias():
-    todas_noticias = []
-    
-    for fuente, url in RSS_FEEDS.items():
-        feed = feedparser.parse(url)
-        for entry in feed.entries:
-            titulo = entry.title
-            link = entry.link
-            resumen = getattr(entry, "summary", "Sin descripción disponible.")
-            publicado = getattr(entry, "published", "Reciente")
-            
-            # Analizar impacto sumando título + resumen
-            texto_completo = f"{titulo} {resumen}"
-            score, palabras_detectadas = calcular_nivel_impacto(texto_completo)
-            
-            todas_noticias.append({
-                "fuente": fuente,
-                "titulo": titulo,
-                "link": link,
-                "resumen": resumen,
-                "publicado": publicado,
-                "impacto_score": score,
-                "palabras_clave": palabras_detectadas
-            })
-            
-    df = pd.DataFrame(todas_noticias)
-    return df
+  st.info(
+      "💡 'El primer paso para salir del pozo es dejar de cavar. Cada día limpio"
+      " es una victoria'."
+  )
 
-# Cargar las noticias analizadas
-with st.spinner("Analizando fuentes internacionales en tiempo real..."):
-    df_noticias = cargar_y_analizar_noticias()
+elif opcion == "🚨 Botón de Pánico":
+  st.title("🚨 Zona de Interrupción de Urgencia")
+  st.error("¡Alto! Detente un momento antes de tomar una decisión impulsiva.")
 
-# --- PANEL LATERAL DE CONTROLES ---
-st.sidebar.header("⚙️ Filtros de Detección")
+  if st.button("🆘 Activar Protocolo de Emergencia (15 minutos)"):
+    with st.spinner(
+        "Respirando hondo... Deja que pase la urgencia inicial..."
+    ):
+      progress_bar = st.progress(0)
+      for i in range(100):
+        time.sleep(0.1)  # Simulación de pausa táctica
+        progress_bar.progress(i + 1)
+    st.success(
+        "Has superado el primer impulso crítico. El cerebro empieza a recuperar"
+        " el control racional."
+    )
+    st.write(
+        "👉 Llama ahora a tu persona de confianza o sal a caminar 10 minutos."
+    )
 
-# Filtro por fuente
-fuentes_seleccionadas = st.sidebar.multiselect(
-    "Filtrar por Fuentes:",
-    options=list(RSS_FEEDS.keys()),
-    default=list(RSS_FEEDS.keys())
-)
+elif opcion == "📊 Diario de Detonantes":
+  st.title("Registro de Emociones y Detonantes")
+  emocion = st.selectbox(
+      "¿Qué emoción o situación gatilló la ansiedad?",
+      ["Ansiedad", "Aburrimiento", "Problemas de dinero", "Estrés laboral", "Otro"],
+  )
+  nota = st.text_area("Describe brevemente qué estabas pensando:")
+  if st.button("Guardar Registro"):
+    st.success("Registro guardado. Tomar conciencia es vencer el patrón.")
 
-# Filtro por Nivel de Impacto
-solo_alto_impacto = st.sidebar.checkbox("🔥 Mostrar SOLO noticias de alto impacto", value=False)
-
-# Búsqueda manual por palabra clave
-busqueda_custom = st.sidebar.text_input("🔍 Buscar término específico:", "").lower()
-
-
-# --- FILTRADO DE DATOS ---
-df_filtrado = df_noticias[df_noticias["fuente"].isin(fuentes_seleccionadas)]
-
-if solo_alto_impacto:
-    df_filtrado = df_filtrado[df_filtrado["impacto_score"] > 0]
-
-if busqueda_custom:
-    df_filtrado = df_filtrado[
-        df_filtrado["titulo"].str.lower().str.contains(busqueda_custom) | 
-        df_filtrado["resumen"].str.lower().str.contains(busqueda_custom)
-    ]
-
-# Ordenar para mostrar las de mayor impacto primero
-df_filtrado = df_filtrado.sort_values(by="impacto_score", ascending=False)
-
-
-# --- VISTA PRINCIPAL DE LA APP ---
-
-# Métricas rápidas arriba
-col1, col2, col3 = st.columns(3)
-col1.metric("Noticias Monitoreadas", len(df_noticias))
-col2.metric("Alertas de Alto Impacto", len(df_noticias[df_noticias["impacto_score"] > 0]))
-col3.metric("Fuentes Activas", len(fuentes_seleccionadas))
-
-st.markdown("---")
-
-# 1. SECCIÓN DE ALERTAS CRÍTICAS DE ÚLTIMA HORA (Top Impacto)
-top_alertas = df_noticias[df_noticias["impacto_score"] >= 2]
-
-if not top_alertas.empty and not solo_alto_impacto:
-    st.error("🚨 **ALERTAS DESTACADAS DE ALTO IMPACTO GLOBAL**")
-    for _, row in top_alertas.head(3).iterrows():
-        with st.expander(f"🔴 [{row['fuente']}] {row['titulo']}", expanded=True):
-            st.write(row['resumen'])
-            st.caption(f"Palabras críticas detectadas: **{', '.join(row['palabras_clave'])}** | [Leer noticia completa]({row['link']})")
-    st.markdown("---")
-
-# 2. FEED GENERAL DE NOTICIAS FILTRADAS
-st.subheader("📰 Feed de Noticias")
-
-if df_filtrado.empty:
-    st.info("No se encontraron noticias con los filtros seleccionados.")
-else:
-    for _, row in df_filtrado.iterrows():
-        with st.container():
-            # Encabezado visual según nivel de impacto
-            if row["impacto_score"] > 0:
-                badge = f"🔥 **IMPACTO DETECTADO** (Términos: *{', '.join(row['palabras_clave'])}*)"
-            else:
-                badge = "ℹ️ Noticia Estándar"
-                
-            st.markdown(f"#### [{row['titulo']}]({row['link']})")
-            st.caption(f"📌 **Fuente:** {row['fuente']} | 📅 {row['publicado']} | {badge}")
-            st.write(row['resumen'])
-            st.markdown("---")
+elif opcion == "💰 Control Financiero":
+  st.title("Estado de Deudas y Presupuesto")
+  st.write(
+      "Mantén el control estricto de tu dinero bloqueando cuentas y planificando"
+      " tus pagos."
+  )
+  # Aquí puedes integrar tablas con Pandas y Supabase para almacenar las finanzas del usuario de forma segura.
